@@ -420,7 +420,7 @@ class GitHubAgent:
         return result is not None
 
     def _handle_issue(self, issue: Dict, is_assigned: bool = False) -> bool:
-        """Handle an issue"""
+        """Handle an issue - fork, work, create PR"""
         repo = issue.get("_repo")
         issue_number = issue["number"]
         issue_key = f"{repo}#{issue_number}"
@@ -439,25 +439,37 @@ class GitHubAgent:
         subprocess.run(["rm", "-rf", str(work_dir)], check=False)
         work_dir.mkdir(parents=True, exist_ok=True)
 
-        repo_url = f"https://x-access-token:{self.github_token}@github.com/{repo}.git"
+        fork_repo = f"{self.github_username}/{repo.split('/')[1]}"
+        fork_endpoint = f"repos/{repo}/forks"
+        fork_result = self._api_request(fork_endpoint, "POST")
+
+        if fork_result and "full_name" in fork_result:
+            fork_repo = fork_result["full_name"]
+            logger.info(f"Created fork: {fork_repo}")
+        else:
+            fork_repo = self._api_request(f"repos/{fork_repo}")
+            if fork_repo:
+                logger.info(f"Using existing fork: {fork_repo}")
+            else:
+                logger.error(f"Could not create or find fork for {repo}")
+                return False
+
+        repo_url = f"https://x-access-token:{self.github_token}@github.com/{fork_repo}.git"
         subprocess.run(
             ["git", "clone", "--depth", "1", repo_url, str(work_dir)], check=True
         )
 
         branch_name = f"openhands/issue-{issue_number}-{issue['title'].lower()[:30].replace(' ', '-')}"
 
-        if issue.get("_mention_comment"):
-            subprocess.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"], cwd=work_dir, capture_output=True)
-            default_branch_result = subprocess.run(
-                ["git", "symbolic-ref", "refs/remotes/origin/HEAD"], cwd=work_dir, capture_output=True, text=True
-            )
-            if default_branch_result.returncode == 0:
-                default_branch = default_branch_result.stdout.strip().split("/")[-1]
-            else:
-                default_branch = "main"
-            subprocess.run(["git", "checkout", default_branch], cwd=work_dir, check=True)
+        default_branch_result = subprocess.run(
+            ["git", "symbolic-ref", "refs/remotes/origin/HEAD"], cwd=work_dir, capture_output=True, text=True
+        )
+        if default_branch_result.returncode == 0:
+            default_branch = default_branch_result.stdout.strip().split("/")[-1]
         else:
-            subprocess.run(["git", "checkout", "-b", branch_name], cwd=work_dir, check=True)
+            default_branch = "main"
+        subprocess.run(["git", "checkout", default_branch], cwd=work_dir, check=True)
+        subprocess.run(["git", "checkout", "-b", branch_name], cwd=work_dir, check=True)
 
         conv_id = f"{repo.replace('/', '_')}_{issue_number}"
         conv_state_dir = self.state_dir / "conversations" / conv_id
@@ -508,13 +520,11 @@ Please work on this issue."""
                 cwd=work_dir,
                 check=True,
             )
+            subprocess.run(
+                ["git", "push", "-u", "origin", branch_name], cwd=work_dir, check=True
+            )
 
-            if not issue.get("_mention_comment"):
-                subprocess.run(
-                    ["git", "push", "-u", "origin", branch_name], cwd=work_dir, check=True
-                )
-
-                pr_body = f"""## Automated Implementation
+            pr_body = f"""## Automated Implementation
 
 I've started working on this issue and created a PR with the implementation.
 
@@ -528,16 +538,16 @@ Please review and let me know if any adjustments are needed.
 ---
 *Automatically created by OpenHands GitHub Agent*
 """
-                pr_endpoint = f"repos/{repo}/pulls"
-                pr_data = {
-                    "title": f"Fix #{issue_number}: {issue['title']}",
-                    "body": pr_body,
-                    "head": branch_name,
-                    "base": "main",
-                }
-                self._api_request(pr_endpoint, "POST", pr_data)
+            pr_endpoint = f"repos/{repo}/pulls"
+            pr_data = {
+                "title": f"Fix #{issue_number}: {issue['title']}",
+                "body": pr_body,
+                "head": f"{self.github_username}:{branch_name}",
+                "base": default_branch,
+            }
+            self._api_request(pr_endpoint, "POST", pr_data)
 
-            comment = f"I've completed the work on this issue. Changes have been made."
+            comment = f"I've completed the work on this issue and created a PR."
             self._comment_on_issue(repo, issue_number, comment)
 
         self.last_processed_issues[issue_key] = datetime.now().isoformat()
