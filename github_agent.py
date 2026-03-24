@@ -218,6 +218,9 @@ class GitHubAgent:
         if pr.get("user", {}).get("login") != self.github_username:
             return False
 
+        if not self._is_contributor(repo, pr.get("user", {}).get("login")):
+            return False
+
         comments_endpoint = f"repos/{repo}/pulls/{pr['number']}/reviews"
         reviews = self._api_request(comments_endpoint)
 
@@ -250,6 +253,10 @@ class GitHubAgent:
             if issues:
                 for issue in issues:
                     if "pull_request" not in issue:
+                        author = issue.get("user", {}).get("login")
+                        if not self._is_contributor(repo, author):
+                            logger.info(f"Assigned issue #{issue['number']} author {author} is not a contributor, skipping")
+                            continue
                         issue["_repo"] = repo
                         all_issues.append(issue)
 
@@ -290,10 +297,35 @@ class GitHubAgent:
                                     issue["body"] = full_issue.get("body", issue.get("body", ""))
                                     issue["labels"] = full_issue.get("labels", issue.get("labels", []))
                                     issue["user"] = full_issue.get("user", issue.get("user", {}))
+                                
+                                author = issue.get("user", {}).get("login")
+                                if not self._is_contributor(repo, author):
+                                    logger.info(f"Issue #{issue['number']} author {author} is not a contributor, skipping")
+                                    continue
+                                
                                 all_issues.append(issue)
                                 break
 
         return all_issues
+
+    def _is_contributor(self, repo: str, username: str) -> bool:
+        """Check if user is a contributor to the repo"""
+        if not username:
+            return False
+        
+        contributors = self._api_request(f"repos/{repo}/contributors?per_page=100")
+        if contributors:
+            for contributor in contributors:
+                if contributor.get("login") == username:
+                    return True
+        
+        members = self._api_request(f"repos/{repo}/collaborators?per_page=100")
+        if members:
+            for member in members:
+                if member.get("login") == username:
+                    return True
+        
+        return False
 
     def _handle_pr(self, pr: Dict) -> bool:
         """Handle a PR that needs attention"""
