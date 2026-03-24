@@ -20,20 +20,25 @@ from pathlib import Path
 import subprocess
 from typing import Optional, List, Dict, Any
 
+logging.basicConfig(
+    level=logging.ERROR,
+    format="%(message)s",
+)
+
+for name in ["openhands.sdk", "litellm", "httpx", "httpcore"]:
+    logging.getLogger(name).setLevel(logging.ERROR)
+
+logger = logging.getLogger("github-agent")
+logger.setLevel(logging.INFO)
+logger.propagate = False
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S"))
+logger.addHandler(handler)
+
 from openhands.sdk import LLM, Agent, Conversation, Tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal import TerminalTool
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-    ],
-)
-logger = logging.getLogger(__name__)
 
 
 class GitHubAgent:
@@ -47,6 +52,7 @@ class GitHubAgent:
         self.github_api = "https://api.github.com"
         self.work_dir = os.getenv("WORK_DIR", "/tmp/openhands-work")
         self.active_repos = []
+        self.base_dir = Path(__file__).parent.resolve()
 
         # Setup LLM
         llm = LLM(
@@ -64,6 +70,8 @@ class GitHubAgent:
                 Tool(name=FileEditorTool.name),
                 Tool(name=TaskTrackerTool.name),
             ],
+            system_prompt_filename=str(self.base_dir / "prompts/github_agent_system_prompt.j2"),
+            system_prompt_kwargs={"llm_security_analyzer": False},
         )
 
         self.work_dir = os.getenv("WORK_DIR", "/tmp/openhands-work")
@@ -421,7 +429,15 @@ class GitHubAgent:
         branch_name = f"openhands/issue-{issue_number}-{issue['title'].lower()[:30].replace(' ', '-')}"
 
         if issue.get("_mention_comment"):
-            subprocess.run(["git", "checkout", "main"], cwd=work_dir, check=True)
+            subprocess.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"], cwd=work_dir, capture_output=True)
+            default_branch_result = subprocess.run(
+                ["git", "symbolic-ref", "refs/remotes/origin/HEAD"], cwd=work_dir, capture_output=True, text=True
+            )
+            if default_branch_result.returncode == 0:
+                default_branch = default_branch_result.stdout.strip().split("/")[-1]
+            else:
+                default_branch = "main"
+            subprocess.run(["git", "checkout", default_branch], cwd=work_dir, check=True)
         else:
             subprocess.run(["git", "checkout", "-b", branch_name], cwd=work_dir, check=True)
 
