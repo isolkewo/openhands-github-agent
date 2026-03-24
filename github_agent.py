@@ -348,6 +348,14 @@ class GitHubAgent:
         conv_state_dir = self.state_dir / "conversations" / conv_id
         conv_state_dir.mkdir(parents=True, exist_ok=True)
 
+        # Check if conversation already exists (resume previous session)
+        existing_conversation = (conv_state_dir / "conversation_state.json").exists()
+        
+        if existing_conversation:
+            logger.info(f"Resuming existing conversation for PR #{pr_number}")
+        else:
+            logger.info(f"Starting new conversation for PR #{pr_number}")
+
         conversation = Conversation(
             agent=self.agent,
             workspace=str(work_dir),
@@ -356,8 +364,10 @@ class GitHubAgent:
 
         prompt = self._build_pr_prompt(pr)
 
-        # Send message to agent
-        conversation.send_message(prompt)
+        # Only send new prompt if not resuming
+        if not existing_conversation:
+            conversation.send_message(prompt)
+        
         conversation.run()
 
         # Check if changes were made
@@ -457,15 +467,17 @@ class GitHubAgent:
         issue_number = issue["number"]
         issue_key = f"{repo}#{issue_number}"
 
-        if issue_key in self.last_processed_issues:
-            logger.info(f"Issue {issue_key} already processed, skipping")
-            return True
+        # Check if PR already exists for this issue (don't duplicate work)
+        # but allow resuming interrupted sessions
+        existing_prs = self._api_request(f"repos/{repo}/pulls?state=open&per_page=100")
+        if existing_prs:
+            for pr in existing_prs:
+                if f"Fix #{issue_number}:" in pr.get("title", "") or f"#{issue_number}" in pr.get("body", ""):
+                    logger.info(f"PR already exists for issue {issue_key}, skipping")
+                    return True
 
         issue_type = "Assigned" if is_assigned else "Mentioned"
         logger.info(f"Processing {issue_type} issue #{issue_key}: {issue['title']}")
-
-        comment = f"I'm working on this issue now."
-        self._comment_on_issue(repo, issue_number, comment)
 
         work_dir = Path(self.work_dir) / repo / f"issue-{issue_number}"
         subprocess.run(["rm", "-rf", str(work_dir)], check=False)
@@ -507,6 +519,19 @@ class GitHubAgent:
         conv_state_dir = self.state_dir / "conversations" / conv_id
         conv_state_dir.mkdir(parents=True, exist_ok=True)
 
+        # Check if conversation already exists (resume previous session)
+        import os
+        existing_conversation = os.path.exists(conv_state_dir / "conversation_state.json")
+        
+        if existing_conversation:
+            logger.info(f"Resuming existing conversation for issue #{issue_number}")
+            comment = f"Resuming work on this issue (previous session was interrupted)."
+            self._comment_on_issue(repo, issue_number, comment)
+        else:
+            logger.info(f"Starting new conversation for issue #{issue_number}")
+            comment = f"I'm working on this issue now."
+            self._comment_on_issue(repo, issue_number, comment)
+
         conversation = Conversation(
             agent=self.agent,
             workspace=str(work_dir),
@@ -523,7 +548,10 @@ Please work on this issue."""
         else:
             prompt = self._build_issue_prompt(issue, is_assigned)
 
-        conversation.send_message(prompt)
+        # Only send new prompt if resuming (otherwise Conversation will restore from state)
+        if not existing_conversation:
+            conversation.send_message(prompt)
+        
         conversation.run()
 
         result = subprocess.run(
