@@ -369,8 +369,35 @@ class GitHubAgent:
         )
 
         if result.returncode != 0:
-            # Commit and push changes
             subprocess.run(["git", "add", "-A"], cwd=work_dir, check=True)
+            
+            import re
+            secret_patterns = [
+                r'(?i)(api[_-]?key|apikey)\s*[=:]\s*["\']?[a-zA-Z0-9]{20,}',
+                r'(?i)(secret|password|passwd|pwd)\s*[=:]\s*["\']?[^\s"\']{8,}',
+                r'(?i)(private[_-]?key|priv[_-]?key)\s*[=:]\s*["\']?',
+                r'(?i)(token|auth[_-]?token|access[_-]?token)\s*[=:]\s*["\']?[a-zA-Z0-9]{20,}',
+                r'(?i)(aws[_-]?access|aws[_-]?secret)\s*[=:]\s*["\']?',
+                r'-----BEGIN (RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----',
+                r'(?i)\.env\b',
+            ]
+            staged_files = subprocess.run(
+                ["git", "diff", "--cached", "--name-only"], cwd=work_dir, capture_output=True, text=True
+            ).stdout.strip().split('\n')
+            risky_files = []
+            for file in staged_files:
+                if file and Path(work_dir / file).exists():
+                    with open(work_dir / file, 'r', errors='ignore') as f:
+                        content = f.read()
+                        for pattern in secret_patterns:
+                            if re.search(pattern, content):
+                                risky_files.append(file)
+                                break
+            
+            if risky_files:
+                logger.warning(f"Potential secrets detected in: {risky_files}. Skipping commit.")
+                return False
+            
             subprocess.run(
                 ["git", "config", "user.name", self.github_username],
                 cwd=work_dir,
@@ -542,6 +569,34 @@ Please work on this issue."""
 
         if result.returncode != 0:
             subprocess.run(["git", "add", "-A"], cwd=work_dir, check=True)
+            
+            import re
+            secret_patterns = [
+                r'(?i)(api[_-]?key|apikey)\s*[=:]\s*["\']?[a-zA-Z0-9]{20,}',
+                r'(?i)(secret|password|passwd|pwd)\s*[=:]\s*["\']?[^\s"\']{8,}',
+                r'(?i)(private[_-]?key|priv[_-]?key)\s*[=:]\s*["\']?',
+                r'(?i)(token|auth[_-]?token|access[_-]?token)\s*[=:]\s*["\']?[a-zA-Z0-9]{20,}',
+                r'(?i)(aws[_-]?access|aws[_-]?secret)\s*[=:]\s*["\']?',
+                r'-----BEGIN (RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----',
+                r'(?i)\.env\b',
+            ]
+            staged_files = subprocess.run(
+                ["git", "diff", "--cached", "--name-only"], cwd=work_dir, capture_output=True, text=True
+            ).stdout.strip().split('\n')
+            risky_files = []
+            for file in staged_files:
+                if file and Path(work_dir / file).exists():
+                    with open(work_dir / file, 'r', errors='ignore') as f:
+                        content = f.read()
+                        for pattern in secret_patterns:
+                            if re.search(pattern, content):
+                                risky_files.append(file)
+                                break
+            
+            if risky_files:
+                logger.warning(f"Potential secrets detected in: {risky_files}. Skipping commit.")
+                return False
+            
             subprocess.run(
                 ["git", "config", "user.name", self.github_username],
                 cwd=work_dir,
