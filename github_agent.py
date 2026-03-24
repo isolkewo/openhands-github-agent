@@ -344,41 +344,19 @@ class GitHubAgent:
 
         subprocess.run(["git", "checkout", pr["head"]["ref"]], cwd=work_dir, check=True)
 
-        conv_id = f"{repo.replace('/', '_')}_pr_{pr_number}"
-        conv_state_dir = self.state_dir / "conversations" / conv_id
+        import uuid
+        conv_id_str = f"{repo.replace('/', '_')}_pr_{pr_number}"
+        conv_id = uuid.uuid5(uuid.NAMESPACE_DNS, conv_id_str)
+        conv_state_dir = self.state_dir / "conversations" / conv_id_str
         conv_state_dir.mkdir(parents=True, exist_ok=True)
 
-        # Find most recent session to resume
-        import glob
-        session_dirs = glob.glob(str(conv_state_dir / "*/"))
-        existing_session = None
-        
-        if session_dirs:
-            most_recent = None
-            most_recent_time = 0
-            for session_dir in session_dirs:
-                events_dir = Path(session_dir) / "events"
-                if events_dir.exists():
-                    events = list(events_dir.glob("event-*.json"))
-                    if events:
-                        latest_event = max(events, key=lambda f: f.stat().st_mtime)
-                        if latest_event.stat().st_mtime > most_recent_time:
-                            most_recent_time = latest_event.stat().st_mtime
-                            most_recent = session_dir
-            
-            if most_recent:
-                existing_session = Path(most_recent).name
-                logger.info(f"Found existing session {existing_session} for PR #{pr_number}")
-        
-        if existing_session:
-            logger.info(f"Resuming existing conversation for PR #{pr_number}")
-        else:
-            logger.info(f"Starting new conversation for PR #{pr_number}")
+        logger.info(f"Starting conversation for PR #{pr_number} (id: {conv_id})")
 
         conversation = Conversation(
             agent=self.agent,
             workspace=str(work_dir),
             persistence_dir=str(conv_state_dir),
+            conversation_id=conv_id,
         )
 
         prompt = self._build_pr_prompt(pr)
@@ -530,46 +508,21 @@ class GitHubAgent:
         subprocess.run(["git", "checkout", default_branch], cwd=work_dir, check=True)
         subprocess.run(["git", "checkout", "-b", branch_name], cwd=work_dir, check=True)
 
-        conv_id = f"{repo.replace('/', '_')}_{issue_number}"
-        conv_state_dir = self.state_dir / "conversations" / conv_id
+        import uuid
+        conv_id_str = f"{repo.replace('/', '_')}_{issue_number}"
+        conv_id = uuid.uuid5(uuid.NAMESPACE_DNS, conv_id_str)
+        conv_state_dir = self.state_dir / "conversations" / conv_id_str
         conv_state_dir.mkdir(parents=True, exist_ok=True)
 
-        # Find most recent session to resume
-        import glob
-        session_dirs = glob.glob(str(conv_state_dir / "*/"))
-        existing_session = None
-        
-        if session_dirs:
-            # Find most recent session by checking event timestamps
-            most_recent = None
-            most_recent_time = 0
-            for session_dir in session_dirs:
-                events_dir = Path(session_dir) / "events"
-                if events_dir.exists():
-                    events = list(events_dir.glob("event-*.json"))
-                    if events:
-                        latest_event = max(events, key=lambda f: f.stat().st_mtime)
-                        if latest_event.stat().st_mtime > most_recent_time:
-                            most_recent_time = latest_event.stat().st_mtime
-                            most_recent = session_dir
-            
-            if most_recent:
-                existing_session = Path(most_recent).name
-                logger.info(f"Found existing session {existing_session} for issue #{issue_number}")
-        
-        if existing_session:
-            logger.info(f"Resuming existing conversation for issue #{issue_number}")
-            comment = f"Resuming work on this issue (previous session was interrupted)."
-            self._comment_on_issue(repo, issue_number, comment)
-        else:
-            logger.info(f"Starting new conversation for issue #{issue_number}")
-            comment = f"I'm working on this issue now."
-            self._comment_on_issue(repo, issue_number, comment)
+        logger.info(f"Starting conversation for issue #{issue_number} (id: {conv_id})")
+        comment = f"I'm working on this issue now."
+        self._comment_on_issue(repo, issue_number, comment)
 
         conversation = Conversation(
             agent=self.agent,
             workspace=str(work_dir),
             persistence_dir=str(conv_state_dir),
+            conversation_id=conv_id,
         )
 
         if issue.get("_mention_comment"):
@@ -582,7 +535,6 @@ Please work on this issue."""
         else:
             prompt = self._build_issue_prompt(issue, is_assigned)
 
-        # Always send prompt - Conversation will handle resumption internally
         conversation.send_message(prompt)
         conversation.run()
 
