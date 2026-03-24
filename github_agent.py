@@ -348,10 +348,29 @@ class GitHubAgent:
         conv_state_dir = self.state_dir / "conversations" / conv_id
         conv_state_dir.mkdir(parents=True, exist_ok=True)
 
-        # Check if conversation already exists (resume previous session)
-        existing_conversation = (conv_state_dir / "conversation_state.json").exists()
+        # Find most recent session to resume
+        import glob
+        session_dirs = glob.glob(str(conv_state_dir / "*/"))
+        existing_session = None
         
-        if existing_conversation:
+        if session_dirs:
+            most_recent = None
+            most_recent_time = 0
+            for session_dir in session_dirs:
+                events_dir = Path(session_dir) / "events"
+                if events_dir.exists():
+                    events = list(events_dir.glob("event-*.json"))
+                    if events:
+                        latest_event = max(events, key=lambda f: f.stat().st_mtime)
+                        if latest_event.stat().st_mtime > most_recent_time:
+                            most_recent_time = latest_event.stat().st_mtime
+                            most_recent = session_dir
+            
+            if most_recent:
+                existing_session = Path(most_recent).name
+                logger.info(f"Found existing session {existing_session} for PR #{pr_number}")
+        
+        if existing_session:
             logger.info(f"Resuming existing conversation for PR #{pr_number}")
         else:
             logger.info(f"Starting new conversation for PR #{pr_number}")
@@ -363,11 +382,7 @@ class GitHubAgent:
         )
 
         prompt = self._build_pr_prompt(pr)
-
-        # Only send new prompt if not resuming
-        if not existing_conversation:
-            conversation.send_message(prompt)
-        
+        conversation.send_message(prompt)
         conversation.run()
 
         # Check if changes were made
@@ -519,11 +534,30 @@ class GitHubAgent:
         conv_state_dir = self.state_dir / "conversations" / conv_id
         conv_state_dir.mkdir(parents=True, exist_ok=True)
 
-        # Check if conversation already exists (resume previous session)
-        import os
-        existing_conversation = os.path.exists(conv_state_dir / "conversation_state.json")
+        # Find most recent session to resume
+        import glob
+        session_dirs = glob.glob(str(conv_state_dir / "*/"))
+        existing_session = None
         
-        if existing_conversation:
+        if session_dirs:
+            # Find most recent session by checking event timestamps
+            most_recent = None
+            most_recent_time = 0
+            for session_dir in session_dirs:
+                events_dir = Path(session_dir) / "events"
+                if events_dir.exists():
+                    events = list(events_dir.glob("event-*.json"))
+                    if events:
+                        latest_event = max(events, key=lambda f: f.stat().st_mtime)
+                        if latest_event.stat().st_mtime > most_recent_time:
+                            most_recent_time = latest_event.stat().st_mtime
+                            most_recent = session_dir
+            
+            if most_recent:
+                existing_session = Path(most_recent).name
+                logger.info(f"Found existing session {existing_session} for issue #{issue_number}")
+        
+        if existing_session:
             logger.info(f"Resuming existing conversation for issue #{issue_number}")
             comment = f"Resuming work on this issue (previous session was interrupted)."
             self._comment_on_issue(repo, issue_number, comment)
@@ -548,10 +582,8 @@ Please work on this issue."""
         else:
             prompt = self._build_issue_prompt(issue, is_assigned)
 
-        # Only send new prompt if resuming (otherwise Conversation will restore from state)
-        if not existing_conversation:
-            conversation.send_message(prompt)
-        
+        # Always send prompt - Conversation will handle resumption internally
+        conversation.send_message(prompt)
         conversation.run()
 
         result = subprocess.run(
