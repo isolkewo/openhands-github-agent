@@ -15,6 +15,7 @@ import sys
 import json
 import time
 import logging
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 import subprocess
@@ -255,11 +256,11 @@ class GitHubAgent:
         return all_issues
 
     def _get_mentioned_issues(self) -> List[Dict]:
-        """Get issues where the bot is mentioned in comments"""
+        """Get issues where the bot is mentioned - looks for issue reference in comment"""
         all_issues = []
 
         for repo in self.active_repos:
-            endpoint = f"repos/{repo}/issues?state=open&per_page=30"
+            endpoint = f"repos/{repo}/issues?state=open&per_page=50"
             issues = self._api_request(endpoint)
 
             if issues:
@@ -272,9 +273,17 @@ class GitHubAgent:
 
                     if comments:
                         for comment in comments:
-                            if f"@{self.github_username}" in comment.get("body", ""):
+                            body = comment.get("body", "")
+                            if f"@{self.github_username}" in body:
+                                match = re.search(r'#(\d+)|github\.com/.+?/(?:issues|pull)/(\d+)', body)
+                                if match:
+                                    ref_num = int(match.group(1) or match.group(2))
+                                    if ref_num != issue["number"]:
+                                        ref_issue = self._api_request(f"repos/{repo}/issues/{ref_num}")
+                                        if ref_issue and "pull_request" not in ref_issue:
+                                            issue = ref_issue
                                 issue["_repo"] = repo
-                                issue["_mention_comment"] = comment.get("body", "")
+                                issue["_mention_comment"] = body
                                 full_issue = self._api_request(f"repos/{repo}/issues/{issue['number']}")
                                 if full_issue:
                                     issue["title"] = full_issue.get("title", issue["title"])
