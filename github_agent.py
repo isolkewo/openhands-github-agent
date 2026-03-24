@@ -467,7 +467,12 @@ class GitHubAgent:
         )
 
         if issue.get("_mention_comment"):
-            prompt = f"Please help with this request: {issue['_mention_comment']}"
+            prompt = f"""Issue: {issue['title']}
+Description: {issue.get('body', 'No description provided')}
+
+User request: {issue['_mention_comment']}
+
+Please work on this issue."""
         else:
             prompt = self._build_issue_prompt(issue, is_assigned)
 
