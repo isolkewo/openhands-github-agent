@@ -275,6 +275,12 @@ class GitHubAgent:
                             if f"@{self.github_username}" in comment.get("body", ""):
                                 issue["_repo"] = repo
                                 issue["_mention_comment"] = comment.get("body", "")
+                                full_issue = self._api_request(f"repos/{repo}/issues/{issue['number']}")
+                                if full_issue:
+                                    issue["title"] = full_issue.get("title", issue["title"])
+                                    issue["body"] = full_issue.get("body", issue.get("body", ""))
+                                    issue["labels"] = full_issue.get("labels", issue.get("labels", []))
+                                    issue["user"] = full_issue.get("user", issue.get("user", {}))
                                 all_issues.append(issue)
                                 break
 
