@@ -515,8 +515,6 @@ class GitHubAgent:
         conv_state_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info(f"Starting conversation for issue #{issue_number} (id: {conv_id})")
-        comment = f"I'm working on this issue now."
-        self._comment_on_issue(repo, issue_number, comment)
 
         conversation = Conversation(
             agent=self.agent,
