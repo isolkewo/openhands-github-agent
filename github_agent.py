@@ -432,6 +432,9 @@ class GitHubAgent:
         issue_type = "Assigned" if is_assigned else "Mentioned"
         logger.info(f"Processing {issue_type} issue #{issue_key}: {issue['title']}")
 
+        comment = f"I'm working on this issue now."
+        self._comment_on_issue(repo, issue_number, comment)
+
         work_dir = Path(self.work_dir) / repo / f"issue-{issue_number}"
         subprocess.run(["rm", "-rf", str(work_dir)], check=False)
         work_dir.mkdir(parents=True, exist_ok=True)
