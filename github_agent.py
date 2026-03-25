@@ -388,16 +388,14 @@ class GitHubAgent:
         https://github.com/{repo}/pull/{pr["number"]}
 
         Use `gh` CLI for GitHub operations:
-        - gh api repos/{repo}/pulls/{pr["number"]}/comments | jq -r '.[] | "\(.path):\(.line) = \(.body)"' - get review comments as file:line = comment
+        - gh api repos/{repo}/pulls/{pr["number"]}/comments | jq -r '.[] | "\(.path):\(.line) = \(.body)"' - get inline review comments
+        - gh api repos/{repo}/issues/{pr["number"]}/comments | jq -r '.[] | "\(.user.login): \(.body)"' - get conversation comments
         - gh pr checkout {pr["number"]} - checkout PR branch
         - gh repo clone {repo} - clone EXACTLY this repo: {repo}
         - git push origin <branch> - push to your fork
         - gh pr create - create PR after pushing
 
         This PR has CHANGES_REQUESTED review. Address all feedback and push updates.
-        
-        IMPORTANT: Clone ONLY the repo specified above: {repo}
-        IMPORTANT: When commenting on PR, use actual line breaks not \\n characters
         """
         return prompt
 
