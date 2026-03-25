@@ -308,12 +308,18 @@ class GitHubAgent:
         notifications = self._api_request("notifications?participating=false&per_page=100")
         
         if not notifications:
+            logger.info("No notifications found")
             return all_issues
+
+        logger.info(f"Total notifications: {len(notifications)}")
 
         for notification in notifications:
             reason = notification.get("reason", "")
             if reason != "mention":
+                logger.debug(f"Skipping notification (reason={reason}): {notification.get('subject',{}).get('title')}")
                 continue
+
+            logger.info(f"Processing mention: {notification.get('subject',{}).get('title')}")
 
             subject = notification.get("subject", {})
             if subject.get("type") != "Issue":
@@ -346,6 +352,8 @@ class GitHubAgent:
                 continue
 
             comment_author = comment_data.get("user", {}).get("login")
+            
+            logger.info(f"Comment author: {comment_author} on {full_repo}")
             
             # Check if comment author is a contributor to the repo where the issue exists
             if not self._is_contributor(full_repo, comment_author):
