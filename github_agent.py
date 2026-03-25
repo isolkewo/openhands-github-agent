@@ -142,10 +142,6 @@ class GitHubAgent:
         import urllib.request
         import urllib.error
 
-        # Debug: log first 10 chars of token for verification
-        token_preview = self.github_token[:10] if self.github_token else "None"
-        logger.debug(f"API call to {endpoint} with token: {token_preview}...")
-
         # Handle full URLs from notifications directly
         if endpoint.startswith("https://"):
             url = endpoint
