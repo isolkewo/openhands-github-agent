@@ -38,7 +38,11 @@ logger.addHandler(handler)
 
 from openhands.sdk import LLM, Agent, Conversation, Tool
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
+from openhands.tools.apply_patch import ApplyPatchTool
+from openhands.tools.delegate import DelegateTool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.glob import GlobTool
+from openhands.tools.grep import GrepTool
 from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal import TerminalTool
 
@@ -74,6 +78,10 @@ class GitHubAgent:
                 Tool(name=TerminalTool.name),
                 Tool(name=FileEditorTool.name),
                 Tool(name=TaskTrackerTool.name),
+                Tool(name=GlobTool.name),
+                Tool(name=GrepTool.name),
+                Tool(name=ApplyPatchTool.name),
+                Tool(name=DelegateTool.name),
             ],
             system_prompt_filename=str(self.base_dir / "prompts/github_agent_system_prompt.j2"),
             system_prompt_kwargs={"llm_security_analyzer": False},
