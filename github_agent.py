@@ -494,9 +494,25 @@ Please work on this issue."""
         - gh repo clone {repo} - clone this repo: {repo}
         - If you don't have write access to {repo}, fork first: gh repo fork {repo} --clone=true
         - git push origin <branch> - push to your fork or the repo if you have access
-        - gh pr create --title "Fix #{issue["number"]}" --body "..." - to create a PR
+        - gh pr create --title "Fix #{issue["number"]}: {issue.get('title', 'Issue')}" --body "PR description" - to create a PR
+
+        When creating a PR, use the following body format:
+        ```
+        ## Summary
+        [Brief description of what was changed and why]
+
+        ## Changes Made
+        - [Change 1]: [Explanation of why this change was made]
+        - [Change 2]: [Explanation of why this change was made]
+
+        ## Testing
+        [Notes on how changes were tested, if applicable]
+
+        Closes #{issue["number"]}
+        ```
 
         IMPORTANT: Clone ONLY this repo: {repo} - do not clone any other repo mentioned in the issue description
+        IMPORTANT: The PR description MUST include "Closes #{issue["number"]}" to link the PR to the issue
         Please work on this issue and create a PR when done.
         """
         return prompt
