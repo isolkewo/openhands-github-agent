@@ -285,6 +285,10 @@ class GitHubAgent:
             subject_type = subject.get("type")
             logger.debug(f"  Subject type: {subject_type}")
             if subject_type != "Issue":
+                # Mark non-issue notifications as read (e.g., PR mentions)
+                thread_url = notification.get("url")
+                if thread_url:
+                    self._mark_notification_read(thread_url)
                 continue
 
             # Get the issue URL directly from notification subject
