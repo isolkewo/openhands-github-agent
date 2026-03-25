@@ -362,15 +362,33 @@ class GitHubAgent:
                 logger.debug(f"  URL parse error: {e}")
                 continue
 
-            # Fetch the comment to get the author
-            comment_data = self._api_request(thread_url)
+            # Fetch the issue to get the comments and check who mentioned us
+            issue_details = self._api_request(issue_url)
             
-            if not comment_data:
-                logger.debug(f"  Failed to fetch comment data")
+            if not issue_details:
+                logger.debug(f"  Failed to fetch issue details")
                 continue
 
-            comment_author = comment_data.get("user", {}).get("login")
+            # Fetch comments to find who mentioned us
+            comments_endpoint = f"repos/{full_repo}/issues/{issue_number}/comments"
+            comments = self._api_request(comments_endpoint)
             
+            # Find the comment that mentions us
+            comment_author = None
+            mention_comment_body = ""
+            
+            if comments:
+                for comment in comments:
+                    body = comment.get("body", "")
+                    if f"@{self.github_username}" in body:
+                        comment_author = comment.get("user", {}).get("login")
+                        mention_comment_body = body
+                        break
+
+            if not comment_author:
+                logger.debug(f"  Could not find comment with mention")
+                continue
+
             logger.info(f"Comment author: {comment_author} on {full_repo}")
             
             # Check if comment author is a contributor to the repo where the issue exists
@@ -380,20 +398,14 @@ class GitHubAgent:
 
             logger.info(f"Found mention from {comment_author} on {full_repo}#{issue_number}")
 
-            # Fetch the full issue details
-            issue = self._api_request(f"repos/{full_repo}/issues/{issue_number}")
-            
-            if not issue or "pull_request" in issue:
-                continue
-
             # Skip if already assigned
-            if issue.get("assignee"):
+            if issue_details.get("assignee"):
                 continue
 
-            issue["_repo"] = full_repo
-            issue["_mention_comment"] = comment_data.get("body", "")
+            issue_details["_repo"] = full_repo
+            issue_details["_mention_comment"] = mention_comment_body
 
-            all_issues.append(issue)
+            all_issues.append(issue_details)
 
         return all_issues
 
