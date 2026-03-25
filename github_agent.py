@@ -321,8 +321,10 @@ class GitHubAgent:
 
             logger.info(f"Found mention from {comment_author} on {full_repo}#{number}")
 
-            # Skip if already assigned (for issues)
+            # Skip if already assigned (for issues) - but mark as read
             if not is_pr and issue_details.get("assignee"):
+                logger.info(f"Issue #{number} already assigned, marking notification as read")
+                self._mark_notification_read(thread_url)
                 continue
 
             issue_details["_repo"] = full_repo
