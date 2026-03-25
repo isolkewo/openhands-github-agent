@@ -299,17 +299,23 @@ class GitHubAgent:
                 
                 logger.debug(f"  Got {len(comments) if comments else 0} comments")
                 
-                # Find the comment that mentions us
+                # Find the most recent comment that mentions us
                 comment_author = None
                 mention_comment_body = ""
                 
                 if comments:
-                    for comment in comments:
+                    # Sort comments by creation date (newest first) and find the first mention
+                    sorted_comments = sorted(
+                        [c for c in comments if c.get("created_at")],
+                        key=lambda x: x.get("created_at", ""),
+                        reverse=True
+                    )
+                    for comment in sorted_comments:
                         body = comment.get("body", "")
                         if f"@{self.github_username}" in body:
                             comment_author = comment.get("user", {}).get("login")
                             mention_comment_body = body
-                            logger.info(f"  Found mention from {comment_author}")
+                            logger.info(f"  Found most recent mention from {comment_author}")
                             break
 
                 if not comment_author:
@@ -355,21 +361,19 @@ class GitHubAgent:
         if username == self.github_username:
             return True
         
+        # For repos we don't have access to, trust that commenters are allowed
+        # We can't check contributors/collaborators on external repos
         try:
-            contributors = self._api_request(f"repos/{repo}/contributors?per_page=100")
+            contributors = self._api_request(f"repos/{repo}/contributors?per_page=100", silent=True)
             if contributors:
                 for contributor in contributors:
                     if contributor.get("login") == username:
                         return True
-            
-            members = self._api_request(f"repos/{repo}/collaborators?per_page=100")
-            if members:
-                for member in members:
-                    if member.get("login") == username:
-                        return True
         except Exception:
             pass
         
+        # If we can't verify contributors, trust the mentioner
+        # This allows mentions from external repos where we lack access
         return True
 
     def _handle_pr_from_notification(self, pr: Dict) -> bool:
