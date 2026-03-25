@@ -189,7 +189,12 @@ class GitHubAgent:
         token_preview = self.github_token[:10] if self.github_token else "None"
         logger.debug(f"API call to {endpoint} with token: {token_preview}...")
 
-        url = f"{self.github_api}/{endpoint.lstrip("/")}"
+        # Handle full URLs from notifications directly
+        if endpoint.startswith("https://"):
+            url = endpoint
+        else:
+            url = f"{self.github_api}/{endpoint.lstrip("/")}"
+        
         headers = {
             "Authorization": f"token {self.github_token}",
             "Accept": "application/vnd.github.v3+json",
