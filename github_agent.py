@@ -632,9 +632,9 @@ Respond with a comment on the issue addressing their request. Use `gh issue comm
 
 def main():
     """Main entry point"""
-    required_vars = ["GITHUB_TOKEN", "GITHUB_REPOSITORIES", "LLM_API_KEY"]
+    required_vars = ["GITHUB_TOKEN", "LLM_API_KEY"]
     missing = [var for var in required_vars if not os.getenv(var)]
-
+    
     if missing:
         print(f"Error: Missing required environment variables: {', '.join(missing)}")
         sys.exit(1)
