@@ -212,7 +212,7 @@ class GitHubAgent:
             return None
 
     def _get_active_prs(self) -> List[Dict]:
-        """Get open PRs needing attention across all active repos"""
+        """Get open PRs needing attention across all active repos."""
         all_prs = []
 
         for repo in self.active_repos:
@@ -275,20 +275,22 @@ class GitHubAgent:
         return False
 
     def _get_assigned_issues(self) -> List[Dict]:
-        """Get issues assigned to the bot across all repos"""
+        """Get issues assigned to the bot across all repos using /user/issues endpoint."""
         all_issues = []
-
-        for repo in self.active_repos:
-            endpoint = f"repos/{repo}/issues?state=open&assignee={self.github_username}&per_page=20"
-            issues = self._api_request(endpoint)
-
-            if issues:
-                for issue in issues:
-                    if "pull_request" not in issue:
-                        author = issue.get("user", {}).get("login")
-                        if not self._is_contributor(repo, author):
-                            logger.info(f"Assigned issue #{issue['number']} author {author} is not a contributor, skipping")
-                            continue
+        
+        # Use the /user/issues endpoint - finds issues assigned to auth user across all repos
+        # This is much faster than iterating through each repo
+        endpoint = f"user/issues?assignee={self.github_username}&state=open&per_page=100"
+        issues = self._api_request(endpoint)
+        
+        if issues:
+            for issue in issues:
+                if "pull_request" not in issue:
+                    # Extract repo from repository_url
+                    repo_url = issue.get("repository_url", "")
+                    parts = repo_url.rstrip("/").split("/")
+                    if len(parts) >= 2:
+                        repo = f"{parts[-2]}/{parts[-1]}"
                         issue["_repo"] = repo
                         all_issues.append(issue)
 
