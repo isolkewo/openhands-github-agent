@@ -395,7 +395,7 @@ class GitHubAgent:
     def _build_pr_prompt(self, pr: Dict) -> str:
         """Build prompt for PR handling"""
         repo = pr.get("_repo")
-        prompt = f"""
+        prompt = rf"""
         Work on PR #{pr["number"]}: {pr["title"]}
         Repo: {repo}
         https://github.com/{repo}/pull/{pr["number"]}
