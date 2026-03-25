@@ -476,6 +476,7 @@ Please work on this issue."""
     def _build_issue_prompt(self, issue: Dict, is_assigned: bool) -> str:
         """Build prompt for issue handling"""
         repo = issue.get("_repo")
+        repo_owner = repo.split('/')[0]
         prompt = f"""
         Work on issue #{issue["number"]}: {issue["title"]}
         Repo: {repo}
@@ -490,8 +491,9 @@ Please work on this issue."""
         Use `gh` CLI for GitHub operations:
         - gh issue view {issue["number"]} - to see issue details
         - gh issue comment {issue["number"]} --body "..." - to comment
-        - gh repo fork {repo} --clone=true - fork and clone THIS EXACT repo: {repo}
-        - git push origin <branch> - push to your fork
+        - gh repo clone {repo} - clone this repo: {repo}
+        - If you don't have write access to {repo}, fork first: gh repo fork {repo} --clone=true
+        - git push origin <branch> - push to your fork or the repo if you have access
         - gh pr create --title "Fix #{issue["number"]}" --body "..." - to create a PR
 
         IMPORTANT: Clone ONLY this repo: {repo} - do not clone any other repo mentioned in the issue description
