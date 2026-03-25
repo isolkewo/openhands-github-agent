@@ -369,9 +369,13 @@ class GitHubAgent:
                 logger.debug(f"  Failed to fetch issue details")
                 continue
 
+            logger.debug(f"  Issue: {full_repo}#{issue_number}")
+
             # Fetch comments to find who mentioned us
             comments_endpoint = f"repos/{full_repo}/issues/{issue_number}/comments"
             comments = self._api_request(comments_endpoint)
+            
+            logger.debug(f"  Got {len(comments) if comments else 0} comments")
             
             # Find the comment that mentions us
             comment_author = None
@@ -383,10 +387,11 @@ class GitHubAgent:
                     if f"@{self.github_username}" in body:
                         comment_author = comment.get("user", {}).get("login")
                         mention_comment_body = body
+                        logger.info(f"  Found mention from {comment_author}")
                         break
 
             if not comment_author:
-                logger.debug(f"  Could not find comment with mention")
+                logger.debug(f"  Could not find comment with @{self.github_username}")
                 continue
 
             logger.info(f"Comment author: {comment_author} on {full_repo}")
