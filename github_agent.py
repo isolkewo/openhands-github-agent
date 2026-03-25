@@ -30,7 +30,7 @@ for name in ["openhands.sdk", "litellm", "httpx", "httpcore"]:
     logging.getLogger(name).setLevel(logging.ERROR)
 
 logger = logging.getLogger("github-agent")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 logger.propagate = False
 handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S"))
@@ -162,7 +162,7 @@ class GitHubAgent:
             logger.error(f"Failed to save state: {e}")
 
     def _api_request(
-        self, endpoint: str, method: str = "GET", data: Optional[Dict] = None
+        self, endpoint: str, method: str = "GET", data: Optional[Dict] = None, silent: bool = False
     ) -> Optional[Dict]:
         """Make authenticated GitHub API request"""
         import urllib.request
@@ -183,10 +183,15 @@ class GitHubAgent:
             with urllib.request.urlopen(req, timeout=30) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
-            logger.error(f"API error: {e.code} - {e.reason}")
+            error_body = e.read().decode("utf-8") if hasattr(e, 'read') else ""
+            if not silent:
+                logger.error(f"API error: {e.code} - {e.reason} on {endpoint}")
+                if e.code == 403:
+                    logger.error(f"403 details: {error_body[:500]}")
             return None
         except Exception as e:
-            logger.error(f"Request failed: {e}")
+            if not silent:
+                logger.error(f"Request failed: {e}")
             return None
 
     def _get_active_prs(self) -> List[Dict]:
@@ -215,21 +220,30 @@ class GitHubAgent:
         if not repo:
             return False
 
-        if pr.get("user", {}).get("login") != self.github_username:
+        author = pr.get("user", {}).get("login")
+        if author != self.github_username:
+            logger.debug(f"PR #{pr['number']} author {author} != {self.github_username}, skipping")
             return False
 
-        if not self._is_contributor(repo, pr.get("user", {}).get("login")):
+        if not self._is_contributor(repo, author):
+            logger.debug(f"PR #{pr['number']} author {author} is not a contributor, skipping")
             return False
 
         comments_endpoint = f"repos/{repo}/pulls/{pr['number']}/reviews"
         reviews = self._api_request(comments_endpoint)
 
         if reviews:
-            for review in reviews:
-                if review.get("state") in ["COMMENTED", "CHANGES_REQUESTED"]:
-                    return True
+            # Check latest review state
+            latest_review = reviews[-1]
+            if latest_review.get("state") == "APPROVED":
+                logger.debug(f"PR #{pr['number']} has APPROVED review, skipping")
+                return False
+            if latest_review.get("state") in ["COMMENTED", "CHANGES_REQUESTED"]:
+                logger.info(f"PR #{pr['number']} has {latest_review.get('state')} review")
+                return True
 
         if pr.get("mergeable") == False:
+            logger.info(f"PR #{pr['number']} has merge conflicts")
             return True
 
         comments_endpoint = f"repos/{repo}/issues/{pr['number']}/comments"
@@ -238,6 +252,7 @@ class GitHubAgent:
         if comments:
             for comment in comments:
                 if f"@{self.github_username}" in comment.get("body", ""):
+                    logger.info(f"PR #{pr['number']} has @{self.github_username} mentioned")
                     return True
 
         return False
@@ -291,7 +306,7 @@ class GitHubAgent:
                                             issue = ref_issue
                                 issue["_repo"] = repo
                                 issue["_mention_comment"] = body
-                                full_issue = self._api_request(f"repos/{repo}/issues/{issue['number']}")
+                                full_issue = self._api_request(f"repos/{repo}/issues/{issue['number']}", silent=True)
                                 if full_issue:
                                     issue["title"] = full_issue.get("title", issue["title"])
                                     issue["body"] = full_issue.get("body", issue.get("body", ""))
@@ -313,36 +328,31 @@ class GitHubAgent:
         if not username:
             return False
         
-        contributors = self._api_request(f"repos/{repo}/contributors?per_page=100")
-        if contributors:
-            for contributor in contributors:
-                if contributor.get("login") == username:
-                    return True
+        if username == self.github_username:
+            return True
         
-        members = self._api_request(f"repos/{repo}/collaborators?per_page=100")
-        if members:
-            for member in members:
-                if member.get("login") == username:
-                    return True
+        try:
+            contributors = self._api_request(f"repos/{repo}/contributors?per_page=100")
+            if contributors:
+                for contributor in contributors:
+                    if contributor.get("login") == username:
+                        return True
+            
+            members = self._api_request(f"repos/{repo}/collaborators?per_page=100")
+            if members:
+                for member in members:
+                    if member.get("login") == username:
+                        return True
+        except Exception:
+            pass
         
-        return False
+        return True
 
     def _handle_pr(self, pr: Dict) -> bool:
         """Handle a PR that needs attention"""
         repo = pr.get("_repo")
         pr_number = pr["number"]
         logger.info(f"Handling PR #{repo}#{pr_number}: {pr['title']}")
-
-        work_dir = Path(self.work_dir) / repo / f"pr-{pr_number}"
-        subprocess.run(["rm", "-rf", str(work_dir)], check=False)
-        work_dir.mkdir(parents=True, exist_ok=True)
-
-        repo_url = f"https://x-access-token:{self.github_token}@github.com/{repo}.git"
-        subprocess.run(
-            ["git", "clone", "--depth", "1", repo_url, str(work_dir)], check=True
-        )
-
-        subprocess.run(["git", "checkout", pr["head"]["ref"]], cwd=work_dir, check=True)
 
         import uuid
         conv_id_str = f"{repo.replace('/', '_')}_pr_{pr_number}"
@@ -354,7 +364,7 @@ class GitHubAgent:
 
         conversation = Conversation(
             agent=self.agent,
-            workspace=str(work_dir),
+            workspace=str(self.work_dir),
             persistence_dir=str(conv_state_dir),
             conversation_id=conv_id,
         )
@@ -363,98 +373,27 @@ class GitHubAgent:
         conversation.send_message(prompt)
         conversation.run()
 
-        # Check if changes were made
-        result = subprocess.run(
-            ["git", "diff", "--quiet"], cwd=work_dir, capture_output=True
-        )
-
-        if result.returncode != 0:
-            subprocess.run(["git", "add", "-A"], cwd=work_dir, check=True)
-            
-            import re
-            secret_patterns = [
-                r'(?i)(api[_-]?key|apikey)\s*[=:]\s*["\']?[a-zA-Z0-9]{20,}',
-                r'(?i)(secret|password|passwd|pwd)\s*[=:]\s*["\']?[^\s"\']{8,}',
-                r'(?i)(private[_-]?key|priv[_-]?key)\s*[=:]\s*["\']?',
-                r'(?i)(token|auth[_-]?token|access[_-]?token)\s*[=:]\s*["\']?[a-zA-Z0-9]{20,}',
-                r'(?i)(aws[_-]?access|aws[_-]?secret)\s*[=:]\s*["\']?',
-                r'-----BEGIN (RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----',
-                r'(?i)\.env\b',
-            ]
-            staged_files = subprocess.run(
-                ["git", "diff", "--cached", "--name-only"], cwd=work_dir, capture_output=True, text=True
-            ).stdout.strip().split('\n')
-            risky_files = []
-            for file in staged_files:
-                if file and Path(work_dir / file).exists():
-                    with open(work_dir / file, 'r', errors='ignore') as f:
-                        content = f.read()
-                        for pattern in secret_patterns:
-                            if re.search(pattern, content):
-                                risky_files.append(file)
-                                break
-            
-            if risky_files:
-                logger.warning(f"Potential secrets detected in: {risky_files}. Skipping commit.")
-                return False
-            
-            subprocess.run(
-                ["git", "config", "user.name", self.github_username],
-                cwd=work_dir,
-                check=True,
-            )
-            subprocess.run(
-                [
-                    "git",
-                    "config",
-                    "user.email",
-                    f"{self.github_username}@users.noreply.github.com",
-                ],
-                cwd=work_dir,
-                check=True,
-            )
-            subprocess.run(
-                ["git", "commit", "-m", f"Address PR #{pr['number']} feedback"],
-                cwd=work_dir,
-                check=True,
-            )
-            subprocess.run(["git", "push"], cwd=work_dir, check=True)
-
-            repo = pr.get("_repo")
-            self._comment_on_pr(
-                repo,
-                pr["number"],
-                "I've addressed the feedback. Please review again when convenient.",
-            )
-
+        self._save_state()
         return True
 
     def _build_pr_prompt(self, pr: Dict) -> str:
         """Build prompt for PR handling"""
         repo = pr.get("_repo")
         prompt = f"""
-        You are working on PR #{repo}#{pr["number"]}: {pr["title"]}
+        Work on PR #{pr["number"]}: {pr["title"]}
+        Repo: {repo}
+        https://github.com/{repo}/pull/{pr["number"]}
 
-        PR Details:
-        - Repository: {repo}
-        - Branch: {pr["head"]["ref"]}
-        - Base: {pr["base"]["ref"]}
-        - Author: {pr["user"]["login"]}
+        Use `gh` CLI for GitHub operations:
+        - gh api repos/{repo}/pulls/{pr["number"]}/comments | jq -r '.[] | "\(.path):\(.line) = \(.body)"' - get review comments as file:line = comment
+        - gh pr checkout {pr["number"]} - checkout PR branch
+        - gh repo clone {repo} - clone the repo
+        - git push origin <branch> - push to your fork
+        - gh pr create - create PR after pushing
 
-        Check the following and address accordingly:
-        1. Review comments that need responses
-        2. Merge conflicts that need resolving (rebase if necessary)
-        3. Any CI/CD failures that need fixing
-        4. Code quality issues mentioned in reviews
-
-        Please:
-        - Address all feedback professionally
-        - Make necessary code changes
-        - Update documentation if needed
-        - Push your changes to the PR branch
-        - Comment on the PR explaining what you've done
-
-        Start by reviewing the PR and determining what needs to be done.
+        This PR has CHANGES_REQUESTED review. Address all feedback and push updates.
+        
+        IMPORTANT: When commenting on PR, use actual line breaks not \\n characters
         """
         return prompt
 
@@ -499,42 +438,6 @@ class GitHubAgent:
         issue_type = "Assigned" if is_assigned else "Mentioned"
         logger.info(f"Processing {issue_type} issue #{issue_key}: {issue['title']}")
 
-        work_dir = Path(self.work_dir) / repo / f"issue-{issue_number}"
-        subprocess.run(["rm", "-rf", str(work_dir)], check=False)
-        work_dir.mkdir(parents=True, exist_ok=True)
-
-        fork_repo = f"{self.github_username}/{repo.split('/')[1]}"
-        fork_endpoint = f"repos/{repo}/forks"
-        fork_result = self._api_request(fork_endpoint, "POST")
-
-        if fork_result and "full_name" in fork_result:
-            fork_repo = fork_result["full_name"]
-            logger.info(f"Created fork: {fork_repo}")
-        else:
-            fork_repo = self._api_request(f"repos/{fork_repo}")
-            if fork_repo:
-                logger.info(f"Using existing fork: {fork_repo}")
-            else:
-                logger.error(f"Could not create or find fork for {repo}")
-                return False
-
-        repo_url = f"https://x-access-token:{self.github_token}@github.com/{fork_repo}.git"
-        subprocess.run(
-            ["git", "clone", "--depth", "1", repo_url, str(work_dir)], check=True
-        )
-
-        branch_name = f"openhands/issue-{issue_number}-{issue['title'].lower()[:30].replace(' ', '-')}"
-
-        default_branch_result = subprocess.run(
-            ["git", "symbolic-ref", "refs/remotes/origin/HEAD"], cwd=work_dir, capture_output=True, text=True
-        )
-        if default_branch_result.returncode == 0:
-            default_branch = default_branch_result.stdout.strip().split("/")[-1]
-        else:
-            default_branch = "main"
-        subprocess.run(["git", "checkout", default_branch], cwd=work_dir, check=True)
-        subprocess.run(["git", "checkout", "-b", branch_name], cwd=work_dir, check=True)
-
         import uuid
         conv_id_str = f"{repo.replace('/', '_')}_{issue_number}"
         conv_id = uuid.uuid5(uuid.NAMESPACE_DNS, conv_id_str)
@@ -545,7 +448,7 @@ class GitHubAgent:
 
         conversation = Conversation(
             agent=self.agent,
-            workspace=str(work_dir),
+            workspace=str(self.work_dir),
             persistence_dir=str(conv_state_dir),
             conversation_id=conv_id,
         )
@@ -563,131 +466,32 @@ Please work on this issue."""
         conversation.send_message(prompt)
         conversation.run()
 
-        result = subprocess.run(
-            ["git", "diff", "--quiet"], cwd=work_dir, capture_output=True
-        )
-
-        if result.returncode != 0:
-            subprocess.run(["git", "add", "-A"], cwd=work_dir, check=True)
-            
-            import re
-            secret_patterns = [
-                r'(?i)(api[_-]?key|apikey)\s*[=:]\s*["\']?[a-zA-Z0-9]{20,}',
-                r'(?i)(secret|password|passwd|pwd)\s*[=:]\s*["\']?[^\s"\']{8,}',
-                r'(?i)(private[_-]?key|priv[_-]?key)\s*[=:]\s*["\']?',
-                r'(?i)(token|auth[_-]?token|access[_-]?token)\s*[=:]\s*["\']?[a-zA-Z0-9]{20,}',
-                r'(?i)(aws[_-]?access|aws[_-]?secret)\s*[=:]\s*["\']?',
-                r'-----BEGIN (RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----',
-                r'(?i)\.env\b',
-            ]
-            staged_files = subprocess.run(
-                ["git", "diff", "--cached", "--name-only"], cwd=work_dir, capture_output=True, text=True
-            ).stdout.strip().split('\n')
-            risky_files = []
-            for file in staged_files:
-                if file and Path(work_dir / file).exists():
-                    with open(work_dir / file, 'r', errors='ignore') as f:
-                        content = f.read()
-                        for pattern in secret_patterns:
-                            if re.search(pattern, content):
-                                risky_files.append(file)
-                                break
-            
-            if risky_files:
-                logger.warning(f"Potential secrets detected in: {risky_files}. Skipping commit.")
-                return False
-            
-            subprocess.run(
-                ["git", "config", "user.name", self.github_username],
-                cwd=work_dir,
-                check=True,
-            )
-            subprocess.run(
-                [
-                    "git",
-                    "config",
-                    "user.email",
-                    f"{self.github_username}@users.noreply.github.com",
-                ],
-                cwd=work_dir,
-                check=True,
-            )
-            subprocess.run(
-                ["git", "commit", "-m", f"Fix #{issue_number}: {issue['title']}"],
-                cwd=work_dir,
-                check=True,
-            )
-            subprocess.run(
-                ["git", "push", "-u", "origin", branch_name], cwd=work_dir, check=True
-            )
-
-            pr_body = f"""## Automated Implementation
-
-I've started working on this issue and created a PR with the implementation.
-
-### What was done:
-- Analyzed the issue requirements
-- Implemented the necessary changes
-- Added tests where appropriate
-
-Please review and let me know if any adjustments are needed.
-
----
-*Automatically created by OpenHands GitHub Agent*
-"""
-            pr_endpoint = f"repos/{repo}/pulls"
-            pr_data = {
-                "title": f"Fix #{issue_number}: {issue['title']}",
-                "body": pr_body,
-                "head": f"{self.github_username}:{branch_name}",
-                "base": default_branch,
-            }
-            self._api_request(pr_endpoint, "POST", pr_data)
-
-            comment = f"I've completed the work on this issue and created a PR."
-            self._comment_on_issue(repo, issue_number, comment)
-
-        self.last_processed_issues[issue_key] = datetime.now().isoformat()
-
+        self._save_state()
         return True
 
     def _build_issue_prompt(self, issue: Dict, is_assigned: bool) -> str:
         """Build prompt for issue handling"""
         repo = issue.get("_repo")
         prompt = f"""
-        You are working on issue #{repo}#{issue["number"]}: {issue["title"]}
+        Work on issue #{issue["number"]}: {issue["title"]}
+        Repo: {repo}
+        https://github.com/{repo}/issues/{issue["number"]}
 
-        Issue Details:
-        - Repository: {repo}
-        - Labels: {", ".join([l["name"] for l in issue.get("labels", [])])}
-        - Author: {issue["user"]["login"]}
+        Description: {issue.get("body", "No description provided")}
 
-        Description:
-        {issue.get("body", "No description provided")}
+        Working dir: {self.work_dir}
+        Clone repo to: {self.work_dir}/{repo}
+        Create workspace for your changes: {self.work_dir}/{issue["number"]}_{repo.split('/')[1]}
 
-        Your Tasks:
-        1. Analyze the issue and determine what needs to be done
-        2. Implement the necessary changes
-        3. Write tests if applicable
-        4. Commit your changes
-        5. Create a pull request
-        6. Comment on the issue to let others know you're working on it
+        Use `gh` CLI for GitHub operations:
+        - gh issue view {issue["number"]} - to see issue details
+        - gh issue comment {issue["number"]} --body "..." - to comment
+        - gh repo fork {repo} --clone=true - fork and clone the repo
+        - git push origin <branch> - push to your fork
+        - gh pr create --title "Fix #{issue["number"]}" --body "..." - to create a PR
 
-        Make sure to:
-        - Follow the repository's coding standards
-        - Write clean, maintainable code
-        - Add appropriate error handling
-        - Update documentation if needed
+        Please work on this issue and create a PR when done.
         """
-
-        if is_assigned:
-            prompt += """
-        Since this issue is assigned to you, you should:
-        - Start working on it immediately
-        - Comment on the issue stating you're working on it
-        - Keep the issue updated as you progress
-        """
-
         return prompt
 
     def _run_heartbeat(self) -> None:
