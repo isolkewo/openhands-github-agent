@@ -296,6 +296,20 @@ class GitHubAgent:
 
         return all_issues
 
+    def _mark_notification_read(self, thread_url: str) -> None:
+        """Mark a notification thread as read."""
+        try:
+            # Extract thread ID from URL and use proper endpoint format
+            # URL: https://api.github.com/notifications/threads/{id}
+            parts = thread_url.rstrip('/').split('/')
+            if len(parts) >= 2:
+                thread_id = parts[-1]
+                endpoint = f"notifications/threads/{thread_id}"
+                self._api_request(endpoint, "PATCH", {"last_read_at": datetime.now().isoformat()})
+                logger.debug(f"Marked notification as read: {thread_id}")
+        except Exception as e:
+            logger.debug(f"Failed to mark notification as read: {e}")
+
     def _get_mentioned_issues(self) -> List[Dict]:
         """Get issues where the bot is mentioned via GitHub notifications API.
         
@@ -411,6 +425,9 @@ class GitHubAgent:
             issue_details["_mention_comment"] = mention_comment_body
 
             all_issues.append(issue_details)
+
+            # Mark notification as read after successfully processing
+            self._mark_notification_read(thread_url)
 
         return all_issues
 
