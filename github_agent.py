@@ -289,9 +289,11 @@ class GitHubAgent:
             # For review_requested/author notifications, use PR data directly
             if reason in ["review_requested", "author"]:
                 logger.info(f"Processing {reason} notification for PR #{number}")
+                logger.debug(f"  is_pr detected: {parts[-2] == 'pulls'}")
                 comment_author = issue_details.get("user", {}).get("login", "user")
                 mention_comment_body = f"Review requested on this PR by {comment_author}"
                 is_pr = True  # review_requested and author are always PRs
+                logger.info(f"  PR author: {comment_author}, will process")
             else:
                 # For mentions, fetch comments to find who mentioned us
                 comments_endpoint = f"repos/{full_repo}/issues/{number}/comments"
