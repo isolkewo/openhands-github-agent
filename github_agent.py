@@ -235,7 +235,7 @@ class GitHubAgent:
         comments_endpoint = f"repos/{repo}/pulls/{pr['number']}/reviews"
         reviews = self._api_request(comments_endpoint)
 
-        if reviews:
+        if reviews and len(reviews) > 0:
             # Check latest review state
             latest_review = reviews[-1]
             if latest_review.get("state") == "APPROVED":
