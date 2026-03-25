@@ -327,11 +327,9 @@ class GitHubAgent:
             issue_details["_mention_comment"] = mention_comment_body
             issue_details["_is_pr"] = is_pr
             issue_details["number"] = number
+            issue_details["_thread_url"] = thread_url
 
             all_issues.append(issue_details)
-
-            # Mark notification as read after successfully processing
-            self._mark_notification_read(thread_url)
 
         return all_issues
 
@@ -556,6 +554,11 @@ Respond with a comment on the issue addressing their request. Use `gh issue comm
                     else:
                         self._assign_issue(repo, issue["number"])
                         self._handle_issue(issue, is_assigned=True)
+                    
+                    # Mark notification as read only after successful processing
+                    thread_url = issue.get("_thread_url")
+                    if thread_url:
+                        self._mark_notification_read(thread_url)
                 except Exception as e:
                     logger.error(
                         f"Failed to handle mentioned issue #{issue['number']}: {e}"
