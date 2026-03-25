@@ -330,8 +330,9 @@ class GitHubAgent:
                     self._mark_notification_read(thread_url)
                     continue
                 
-                # Check if comment author is a contributor to the repo where the issue exists
-                if not self._is_contributor(full_repo, comment_author):
+                # For PRs, trust that commenters/reviewers are contributors to that repo
+                # For issues, check if they're allowed to mention the bot
+                if not is_pr and not self._is_contributor(full_repo, comment_author):
                     logger.info(f"Mention from {comment_author} on {full_repo} - not a contributor, marking as read")
                     self._mark_notification_read(thread_url)
                     continue
