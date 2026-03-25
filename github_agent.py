@@ -341,22 +341,15 @@ class GitHubAgent:
             if subject_type != "Issue":
                 continue
 
-            # Notification URL is a thread URL, fetch to get the actual issue URL
-            thread_url = notification.get("url")
-            logger.debug(f"  Thread URL: {thread_url}")
-            if not thread_url:
-                continue
-
-            thread_data = self._api_request(thread_url)
-            if not thread_data:
-                logger.debug(f"  Failed to fetch thread data")
-                continue
-
-            # Get the subject URL which points to the actual issue
-            issue_url = thread_data.get("subject", {}).get("url")
+            # Get the issue URL directly from notification subject
+            issue_url = subject.get("url")
             logger.debug(f"  Issue URL: {issue_url}")
             if not issue_url:
+                logger.debug(f"  No issue URL in notification")
                 continue
+
+            # Also save thread URL for marking as read later
+            thread_url = notification.get("url")
 
             # Extract repo and issue number from issue URL
             # URL format: https://api.github.com/repos/{owner}/{repo}/issues/{number}
