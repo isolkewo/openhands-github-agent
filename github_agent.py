@@ -322,10 +322,13 @@ class GitHubAgent:
             logger.info(f"Processing mention: {notification.get('subject',{}).get('title')}")
 
             subject = notification.get("subject", {})
-            if subject.get("type") != "Issue":
+            subject_type = subject.get("type")
+            logger.debug(f"  Subject type: {subject_type}")
+            if subject_type != "Issue":
                 continue
 
             url = notification.get("url")
+            logger.debug(f"  Notification URL: {url}")
             if not url:
                 continue
 
@@ -333,14 +336,18 @@ class GitHubAgent:
             # URL format: https://api.github.com/repos/{owner}/{repo}/issues/{number}
             try:
                 parts = url.rstrip('/').split('/')
+                logger.debug(f"  URL parts: {parts}")
                 if len(parts) >= 7 and parts[-2] == 'issues':
                     owner = parts[-4]
                     repo_name = parts[-3]
                     issue_number = int(parts[-1])
                     full_repo = f"{owner}/{repo_name}"
+                    logger.info(f"  Parsed: {full_repo}#{issue_number}")
                 else:
+                    logger.debug(f"  Invalid URL format: {url}")
                     continue
-            except (ValueError, IndexError):
+            except (ValueError, IndexError) as e:
+                logger.debug(f"  URL parse error: {e}")
                 continue
 
             # Check if the notification is from a contributor in a watched repo
@@ -349,6 +356,7 @@ class GitHubAgent:
             comment_data = self._api_request(notification_url)
             
             if not comment_data:
+                logger.debug(f"  Failed to fetch comment data")
                 continue
 
             comment_author = comment_data.get("user", {}).get("login")
