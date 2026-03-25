@@ -244,7 +244,7 @@ class GitHubAgent:
             
             # Only handle mentions and review requests
             if reason not in ["mention", "review_requested", "author"]:
-                logger.debug(f"  Skipping notification with reason: {reason}")
+                logger.info(f"  Skipping notification (reason={reason}): {notification.get('subject',{}).get('title')}")
                 continue
 
             # Get the issue/PR URL directly from notification subject
@@ -268,9 +268,9 @@ class GitHubAgent:
                     repo_name = parts[-3]
                     number = int(parts[-1])
                     full_repo = f"{owner}/{repo_name}"
-                    logger.info(f"  Parsed: {full_repo}#{number}")
+                    logger.info(f"  Parsed: {full_repo}#{number} (reason={reason})")
                 else:
-                    logger.debug(f"  Invalid URL format: {issue_url}")
+                    logger.info(f"  Invalid URL format: {issue_url}")
                     continue
             except (ValueError, IndexError) as e:
                 logger.debug(f"  URL parse error: {e}")
