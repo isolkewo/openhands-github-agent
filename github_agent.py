@@ -330,9 +330,18 @@ class GitHubAgent:
                     self._mark_notification_read(thread_url)
                     continue
                 
-                # For PRs, trust that commenters/reviewers are contributors to that repo
+                # For PRs, only respond if commenter is the repo owner or has done a review
                 # For issues, check if they're allowed to mention the bot
-                if not is_pr and not self._is_contributor(full_repo, comment_author):
+                if is_pr:
+                    # Check if commenter is the repo owner
+                    repo_owner = issue_details.get("user", {}).get("login")
+                    has_review = self._has_reviewed_pr(full_repo, number, comment_author)
+                    
+                    if comment_author != repo_owner and not has_review:
+                        logger.info(f"Mention from {comment_author} on PR {full_repo}#{number} - not owner or reviewer, marking as read")
+                        self._mark_notification_read(thread_url)
+                        continue
+                elif not self._is_contributor(full_repo, comment_author):
                     logger.info(f"Mention from {comment_author} on {full_repo} - not a contributor, marking as read")
                     self._mark_notification_read(thread_url)
                     continue
@@ -355,6 +364,25 @@ class GitHubAgent:
             all_issues.append(issue_details)
 
         return all_issues
+
+    def _has_reviewed_pr(self, repo: str, pr_number: int, username: str) -> bool:
+        """Check if user has submitted a review on the PR"""
+        if not username:
+            return False
+        
+        if username == self.github_username:
+            return True
+        
+        try:
+            reviews = self._api_request(f"repos/{repo}/pulls/{pr_number}/reviews?per_page=100", silent=True)
+            if reviews:
+                for review in reviews:
+                    if review.get("user", {}).get("login") == username:
+                        return True
+        except Exception:
+            pass
+        
+        return False
 
     def _is_contributor(self, repo: str, username: str) -> bool:
         """Check if user is a contributor to the repo"""
