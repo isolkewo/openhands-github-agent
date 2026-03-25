@@ -284,34 +284,32 @@ class GitHubAgent:
             subject = notification.get("subject", {})
             subject_type = subject.get("type")
             logger.debug(f"  Subject type: {subject_type}")
-            if subject_type != "Issue":
-                # Mark non-issue notifications as read (e.g., PR mentions)
-                thread_url = notification.get("url")
-                if thread_url:
-                    self._mark_notification_read(thread_url)
+            # Only process Issue and PullRequest mentions
+            if subject_type not in ["Issue", "PullRequest"]:
                 continue
 
-            # Get the issue URL directly from notification subject
+            # Get the issue/PR URL directly from notification subject
             issue_url = subject.get("url")
-            logger.debug(f"  Issue URL: {issue_url}")
+            logger.debug(f"  Issue/PR URL: {issue_url}")
             if not issue_url:
-                logger.debug(f"  No issue URL in notification")
+                logger.debug(f"  No URL in notification")
                 continue
 
             # Also save thread URL for marking as read later
             thread_url = notification.get("url")
 
-            # Extract repo and issue number from issue URL
+            # Extract repo and number from URL
             # URL format: https://api.github.com/repos/{owner}/{repo}/issues/{number}
+            # PRs use the same /issues/ endpoint
             try:
                 parts = issue_url.rstrip('/').split('/')
                 logger.debug(f"  URL parts: {parts}")
-                if len(parts) >= 7 and parts[-2] == 'issues':
+                if len(parts) >= 7 and parts[-2] in ['issues', 'pulls']:
                     owner = parts[-4]
                     repo_name = parts[-3]
-                    issue_number = int(parts[-1])
+                    number = int(parts[-1])
                     full_repo = f"{owner}/{repo_name}"
-                    logger.info(f"  Parsed: {full_repo}#{issue_number}")
+                    logger.info(f"  Parsed: {full_repo}#{number}")
                 else:
                     logger.debug(f"  Invalid URL format: {issue_url}")
                     continue
@@ -319,17 +317,18 @@ class GitHubAgent:
                 logger.debug(f"  URL parse error: {e}")
                 continue
 
-            # Fetch the issue to get the comments and check who mentioned us
+            # Fetch the issue/PR to get the comments and check who mentioned us
             issue_details = self._api_request(issue_url)
             
             if not issue_details:
                 logger.debug(f"  Failed to fetch issue details")
                 continue
 
-            logger.debug(f"  Issue: {full_repo}#{issue_number}")
+            logger.debug(f"  Issue/PR: {full_repo}#{number}")
+            is_pr = parts[-2] == 'pulls'
 
-            # Fetch comments to find who mentioned us
-            comments_endpoint = f"repos/{full_repo}/issues/{issue_number}/comments"
+            # Fetch comments to find who mentioned us (use /issues/ endpoint for both)
+            comments_endpoint = f"repos/{full_repo}/issues/{number}/comments"
             comments = self._api_request(comments_endpoint)
             
             logger.debug(f"  Got {len(comments) if comments else 0} comments")
@@ -358,14 +357,16 @@ class GitHubAgent:
                 logger.info(f"Mention from {comment_author} on {full_repo} - not a contributor, skipping")
                 continue
 
-            logger.info(f"Found mention from {comment_author} on {full_repo}#{issue_number}")
+            logger.info(f"Found mention from {comment_author} on {full_repo}#{number}")
 
-            # Skip if already assigned
-            if issue_details.get("assignee"):
+            # Skip if already assigned (for issues)
+            if not is_pr and issue_details.get("assignee"):
                 continue
 
             issue_details["_repo"] = full_repo
             issue_details["_mention_comment"] = mention_comment_body
+            issue_details["_is_pr"] = is_pr
+            issue_details["number"] = number
 
             all_issues.append(issue_details)
 
@@ -397,6 +398,49 @@ class GitHubAgent:
         except Exception:
             pass
         
+        return True
+
+    def _handle_pr_from_notification(self, pr: Dict) -> bool:
+        """Handle a PR mentioned in a notification."""
+        repo = pr.get("_repo")
+        pr_number = pr["number"]
+        logger.info(f"Handling PR #{repo}#{pr_number} from notification: {pr['title']}")
+
+        import uuid
+        conv_id_str = f"{repo.replace('/', '_')}_pr_{pr_number}"
+        conv_id = uuid.uuid5(uuid.NAMESPACE_DNS, conv_id_str)
+        conv_state_dir = self.state_dir / "conversations" / conv_id_str
+        conv_state_dir.mkdir(parents=True, exist_ok=True)
+
+        conversation = Conversation(
+            agent=self.agent,
+            workspace=str(self.work_dir),
+            persistence_dir=str(conv_state_dir),
+            conversation_id=conv_id,
+        )
+
+        comment_author = pr.get("user", {}).get("login", "user")
+        mention_comment = pr.get("_mention_comment", "")
+        prompt = f"""A user tagged you in a comment on this PR. Respond to their request.
+
+PR: #{pr_number} - {pr['title']}
+Repo: {repo}
+https://github.com/{repo}/pull/{pr_number}
+
+Comment from @{comment_author}:
+{mention_comment}
+
+Your task:
+1. Understand the user's request in the comment
+2. Review the PR and address any feedback
+3. Push updates if needed, or comment back with your findings
+4. If you need more information, ask the user
+
+Use `gh` CLI to checkout the PR: `gh pr checkout {pr_number}`"""
+
+        conversation.send_message(prompt)
+        conversation.run()
+        self._save_state()
         return True
 
     def _comment_on_issue(self, repo: str, issue_number: int, body: str) -> None:
@@ -546,8 +590,12 @@ Respond with a comment on the issue addressing their request. Use `gh issue comm
             for issue in mentioned_issues:
                 try:
                     repo = issue.get("_repo")
-                    self._assign_issue(repo, issue["number"])
-                    self._handle_issue(issue, is_assigned=True)
+                    is_pr = "pull_request" in issue or issue.get("_is_pr", False)
+                    if is_pr:
+                        self._handle_pr_from_notification(issue)
+                    else:
+                        self._assign_issue(repo, issue["number"])
+                        self._handle_issue(issue, is_assigned=True)
                 except Exception as e:
                     logger.error(
                         f"Failed to handle mentioned issue #{issue['number']}: {e}"
