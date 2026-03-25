@@ -465,9 +465,8 @@ Comment from @{comment_author}:
 
 Your task:
 1. Understand the user's request in the comment
-2. Provide a helpful response by commenting on the issue
-3. If the request requires code changes, create a PR
-4. If you need more information, ask the user
+2. Respond appropriately - comment back, ask clarifying questions, or help if possible
+3. Only create a PR if the user explicitly asks you to make changes
 
 Respond with a comment on the issue addressing their request. Use `gh issue comment {issue['number']} --body "..."` to respond."""
         else:
