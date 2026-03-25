@@ -284,13 +284,37 @@ class GitHubAgent:
             logger.debug(f"  Issue/PR: {full_repo}#{number}")
             is_pr = parts[-2] == 'pulls'
 
-            # For review_requested/author notifications, use PR data directly
+            # For review_requested/author notifications, fetch the actual review
             if reason in ["review_requested", "author"]:
                 logger.info(f"Processing {reason} notification for PR #{number}")
                 logger.debug(f"  is_pr detected: {parts[-2] == 'pulls'}")
-                comment_author = issue_details.get("user", {}).get("login", "user")
-                mention_comment_body = f"Review requested on this PR by {comment_author}"
                 is_pr = True  # review_requested and author are always PRs
+                
+                # Fetch reviews to get the actual review body
+                reviews_endpoint = f"repos/{full_repo}/pulls/{number}/reviews?per_page=100"
+                reviews = self._api_request(reviews_endpoint)
+                
+                comment_author = None
+                mention_comment_body = ""
+                
+                if reviews:
+                    sorted_reviews = sorted(
+                        [r for r in reviews if r.get("submitted_at")],
+                        key=lambda x: x.get("submitted_at", ""),
+                        reverse=True
+                    )
+                    for review in sorted_reviews:
+                        reviewer = review.get("user", {}).get("login")
+                        body = review.get("body") or f"Review by {reviewer}"
+                        comment_author = reviewer
+                        mention_comment_body = body
+                        logger.info(f"Found review from {comment_author}")
+                        break
+                
+                if not comment_author:
+                    comment_author = issue_details.get("user", {}).get("login", "user")
+                    mention_comment_body = f"Review requested on this PR by {comment_author}"
+                
                 logger.info(f"  PR author: {comment_author}, will process")
             else:
                 # For mentions, fetch comments to find who mentioned us
