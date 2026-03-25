@@ -232,13 +232,19 @@ class GitHubAgent:
                 logger.debug(f"Skipping notification (reason={reason}): {notification.get('subject',{}).get('title')}")
                 continue
 
-            logger.info(f"Processing mention: {notification.get('subject',{}).get('title')}")
+            logger.info(f"Processing notification: {notification.get('subject',{}).get('title')} (reason={notification.get('reason')})")
 
             subject = notification.get("subject", {})
             subject_type = subject.get("type")
-            logger.debug(f"  Subject type: {subject_type}")
-            # Only process Issue and PullRequest mentions
+            reason = notification.get("reason", "")
+            logger.debug(f"  Subject type: {subject_type}, Reason: {reason}")
+            # Only process Issue and PullRequest notifications
             if subject_type not in ["Issue", "PullRequest"]:
+                continue
+            
+            # Only handle mentions and review requests
+            if reason not in ["mention", "review_requested", "author"]:
+                logger.debug(f"  Skipping notification with reason: {reason}")
                 continue
 
             # Get the issue/PR URL directly from notification subject
@@ -280,40 +286,47 @@ class GitHubAgent:
             logger.debug(f"  Issue/PR: {full_repo}#{number}")
             is_pr = parts[-2] == 'pulls'
 
-            # Fetch comments to find who mentioned us (use /issues/ endpoint for both)
-            comments_endpoint = f"repos/{full_repo}/issues/{number}/comments"
-            comments = self._api_request(comments_endpoint)
-            
-            logger.debug(f"  Got {len(comments) if comments else 0} comments")
-            
-            # Find the comment that mentions us
-            comment_author = None
-            mention_comment_body = ""
-            
-            if comments:
-                for comment in comments:
-                    body = comment.get("body", "")
-                    if f"@{self.github_username}" in body:
-                        comment_author = comment.get("user", {}).get("login")
-                        mention_comment_body = body
-                        logger.info(f"  Found mention from {comment_author}")
-                        break
+            # For review_requested/author notifications, use PR data directly
+            if reason in ["review_requested", "author"]:
+                logger.info(f"Processing {reason} notification for PR #{number}")
+                comment_author = issue_details.get("user", {}).get("login", "user")
+                mention_comment_body = f"Review requested on this PR by {comment_author}"
+                is_pr = True  # review_requested and author are always PRs
+            else:
+                # For mentions, fetch comments to find who mentioned us
+                comments_endpoint = f"repos/{full_repo}/issues/{number}/comments"
+                comments = self._api_request(comments_endpoint)
+                
+                logger.debug(f"  Got {len(comments) if comments else 0} comments")
+                
+                # Find the comment that mentions us
+                comment_author = None
+                mention_comment_body = ""
+                
+                if comments:
+                    for comment in comments:
+                        body = comment.get("body", "")
+                        if f"@{self.github_username}" in body:
+                            comment_author = comment.get("user", {}).get("login")
+                            mention_comment_body = body
+                            logger.info(f"  Found mention from {comment_author}")
+                            break
 
-            if not comment_author:
-                logger.debug(f"  Could not find comment with @{self.github_username}")
-                continue
+                if not comment_author:
+                    logger.debug(f"  Could not find comment with @{self.github_username}")
+                    continue
 
-            logger.info(f"Comment author: {comment_author} on {full_repo}")
-            
-            # Check if comment author is allowed to mention the bot
-            if self.allowed_mentioners and comment_author not in self.allowed_mentioners:
-                logger.info(f"Mention from {comment_author} - not in allowed list, skipping")
-                continue
-            
-            # Check if comment author is a contributor to the repo where the issue exists
-            if not self._is_contributor(full_repo, comment_author):
-                logger.info(f"Mention from {comment_author} on {full_repo} - not a contributor, skipping")
-                continue
+                logger.info(f"Comment author: {comment_author} on {full_repo}")
+                
+                # Check if comment author is allowed to mention the bot
+                if self.allowed_mentioners and comment_author not in self.allowed_mentioners:
+                    logger.info(f"Mention from {comment_author} - not in allowed list, skipping")
+                    continue
+                
+                # Check if comment author is a contributor to the repo where the issue exists
+                if not self._is_contributor(full_repo, comment_author):
+                    logger.info(f"Mention from {comment_author} on {full_repo} - not a contributor, skipping")
+                    continue
 
             logger.info(f"Found mention from {comment_author} on {full_repo}#{number}")
 
@@ -380,7 +393,26 @@ class GitHubAgent:
 
         comment_author = pr.get("_comment_author", pr.get("user", {}).get("login", "user"))
         mention_comment = pr.get("_mention_comment", "")
-        prompt = f"""A user tagged you in a comment on this PR. Respond to their request.
+        is_review_request = "Review requested" in mention_comment
+        
+        if is_review_request:
+            prompt = f"""You have been requested to review this PR.
+
+PR: #{pr_number} - {pr['title']}
+Repo: {repo}
+https://github.com/{repo}/pull/{pr_number}
+
+Requested by: @{comment_author}
+
+Your task:
+1. Review the PR code changes
+2. Check if the changes are correct and complete
+3. Add review comments if you find issues
+4. Approve or request changes based on your review
+
+Use `gh` CLI to checkout the PR: `gh pr checkout {pr_number}`"""
+        else:
+            prompt = f"""A user tagged you in a comment on this PR. Respond to their request.
 
 PR: #{pr_number} - {pr['title']}
 Repo: {repo}
