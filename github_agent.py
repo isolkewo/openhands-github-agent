@@ -327,15 +327,27 @@ class GitHubAgent:
             if subject_type != "Issue":
                 continue
 
-            url = notification.get("url")
-            logger.debug(f"  Notification URL: {url}")
-            if not url:
+            # Notification URL is a thread URL, fetch to get the actual issue URL
+            thread_url = notification.get("url")
+            logger.debug(f"  Thread URL: {thread_url}")
+            if not thread_url:
                 continue
 
-            # Extract repo and issue number from notification URL
+            thread_data = self._api_request(thread_url)
+            if not thread_data:
+                logger.debug(f"  Failed to fetch thread data")
+                continue
+
+            # Get the subject URL which points to the actual issue
+            issue_url = thread_data.get("subject", {}).get("url")
+            logger.debug(f"  Issue URL: {issue_url}")
+            if not issue_url:
+                continue
+
+            # Extract repo and issue number from issue URL
             # URL format: https://api.github.com/repos/{owner}/{repo}/issues/{number}
             try:
-                parts = url.rstrip('/').split('/')
+                parts = issue_url.rstrip('/').split('/')
                 logger.debug(f"  URL parts: {parts}")
                 if len(parts) >= 7 and parts[-2] == 'issues':
                     owner = parts[-4]
@@ -344,16 +356,14 @@ class GitHubAgent:
                     full_repo = f"{owner}/{repo_name}"
                     logger.info(f"  Parsed: {full_repo}#{issue_number}")
                 else:
-                    logger.debug(f"  Invalid URL format: {url}")
+                    logger.debug(f"  Invalid URL format: {issue_url}")
                     continue
             except (ValueError, IndexError) as e:
                 logger.debug(f"  URL parse error: {e}")
                 continue
 
-            # Check if the notification is from a contributor in a watched repo
-            # We need to fetch the comment to get the author
-            notification_url = notification.get("url")
-            comment_data = self._api_request(notification_url)
+            # Fetch the comment to get the author
+            comment_data = self._api_request(thread_url)
             
             if not comment_data:
                 logger.debug(f"  Failed to fetch comment data")
