@@ -295,48 +295,77 @@ class GitHubAgent:
         return all_issues
 
     def _get_mentioned_issues(self) -> List[Dict]:
-        """Get issues where the bot is mentioned - looks for issue reference in comment"""
+        """Get issues where the bot is mentioned via GitHub notifications API.
+        
+        Fetches all notifications across all repos, filters for mentions from
+        contributors in watched repos, and returns the referenced issues.
+        """
         all_issues = []
 
-        for repo in self.active_repos:
-            endpoint = f"repos/{repo}/issues?state=open&per_page=50"
-            issues = self._api_request(endpoint)
+        # Fetch all notifications for the authenticated user
+        notifications = self._api_request("notifications?participating=false&per_page=100")
+        
+        if not notifications:
+            return all_issues
 
-            if issues:
-                for issue in issues:
-                    if issue.get("assignee") or "pull_request" in issue:
-                        continue
+        for notification in notifications:
+            reason = notification.get("reason", "")
+            if reason != "mention":
+                continue
 
-                    comments_endpoint = f"repos/{repo}/issues/{issue['number']}/comments"
-                    comments = self._api_request(comments_endpoint)
+            subject = notification.get("subject", {})
+            if subject.get("type") != "Issue":
+                continue
 
-                    if comments:
-                        for comment in comments:
-                            body = comment.get("body", "")
-                            if f"@{self.github_username}" in body:
-                                match = re.search(r'#(\d+)|github\.com/.+?/(?:issues|pull)/(\d+)', body)
-                                if match:
-                                    ref_num = int(match.group(1) or match.group(2))
-                                    if ref_num != issue["number"]:
-                                        ref_issue = self._api_request(f"repos/{repo}/issues/{ref_num}")
-                                        if ref_issue and "pull_request" not in ref_issue:
-                                            issue = ref_issue
-                                issue["_repo"] = repo
-                                issue["_mention_comment"] = body
-                                full_issue = self._api_request(f"repos/{repo}/issues/{issue['number']}", silent=True)
-                                if full_issue:
-                                    issue["title"] = full_issue.get("title", issue["title"])
-                                    issue["body"] = full_issue.get("body", issue.get("body", ""))
-                                    issue["labels"] = full_issue.get("labels", issue.get("labels", []))
-                                    issue["user"] = full_issue.get("user", issue.get("user", {}))
-                                
-                                comment_author = comment.get("user", {}).get("login")
-                                if not self._is_contributor(repo, comment_author):
-                                    logger.info(f"Mention comment author {comment_author} is not a contributor, skipping")
-                                    continue
-                                
-                                all_issues.append(issue)
-                                break
+            url = notification.get("url")
+            if not url:
+                continue
+
+            # Extract repo and issue number from notification URL
+            # URL format: https://api.github.com/repos/{owner}/{repo}/issues/{number}
+            try:
+                parts = url.rstrip('/').split('/')
+                if len(parts) >= 7 and parts[-2] == 'issues':
+                    owner = parts[-4]
+                    repo_name = parts[-3]
+                    issue_number = int(parts[-1])
+                    full_repo = f"{owner}/{repo_name}"
+                else:
+                    continue
+            except (ValueError, IndexError):
+                continue
+
+            # Check if the notification is from a contributor in a watched repo
+            # We need to fetch the comment to get the author
+            notification_url = notification.get("url")
+            comment_data = self._api_request(notification_url)
+            
+            if not comment_data:
+                continue
+
+            comment_author = comment_data.get("user", {}).get("login")
+            
+            # Check if comment author is a contributor to the repo where the issue exists
+            if not self._is_contributor(full_repo, comment_author):
+                logger.info(f"Mention from {comment_author} on {full_repo} - not a contributor, skipping")
+                continue
+
+            logger.info(f"Found mention from {comment_author} on {full_repo}#{issue_number}")
+
+            # Fetch the full issue details
+            issue = self._api_request(f"repos/{full_repo}/issues/{issue_number}")
+            
+            if not issue or "pull_request" in issue:
+                continue
+
+            # Skip if already assigned
+            if issue.get("assignee"):
+                continue
+
+            issue["_repo"] = full_repo
+            issue["_mention_comment"] = comment_data.get("body", "")
+
+            all_issues.append(issue)
 
         return all_issues
 
