@@ -390,12 +390,13 @@ class GitHubAgent:
         Use `gh` CLI for GitHub operations:
         - gh api repos/{repo}/pulls/{pr["number"]}/comments | jq -r '.[] | "\(.path):\(.line) = \(.body)"' - get review comments as file:line = comment
         - gh pr checkout {pr["number"]} - checkout PR branch
-        - gh repo clone {repo} - clone the repo
+        - gh repo clone {repo} - clone EXACTLY this repo: {repo}
         - git push origin <branch> - push to your fork
         - gh pr create - create PR after pushing
 
         This PR has CHANGES_REQUESTED review. Address all feedback and push updates.
         
+        IMPORTANT: Clone ONLY the repo specified above: {repo}
         IMPORTANT: When commenting on PR, use actual line breaks not \\n characters
         """
         return prompt
@@ -489,10 +490,11 @@ Please work on this issue."""
         Use `gh` CLI for GitHub operations:
         - gh issue view {issue["number"]} - to see issue details
         - gh issue comment {issue["number"]} --body "..." - to comment
-        - gh repo fork {repo} --clone=true - fork and clone the repo
+        - gh repo fork {repo} --clone=true - fork and clone THIS EXACT repo: {repo}
         - git push origin <branch> - push to your fork
         - gh pr create --title "Fix #{issue["number"]}" --body "..." - to create a PR
 
+        IMPORTANT: Clone ONLY this repo: {repo} - do not clone any other repo mentioned in the issue description
         Please work on this issue and create a PR when done.
         """
         return prompt
