@@ -562,12 +562,23 @@ class GitHubAgent:
         )
 
         if issue.get("_mention_comment"):
-            prompt = f"""Issue: {issue['title']}
-Description: {issue.get('body', 'No description provided')}
+            comment_author = issue.get("user", {}).get("login", "user")
+            prompt = f"""A user tagged you in a comment on this issue. Respond to their request.
 
-User request: {issue['_mention_comment']}
+Issue: #{issue['number']} - {issue['title']}
+Repo: {repo}
+https://github.com/{repo}/issues/{issue['number']}
 
-Please work on this issue."""
+Comment from @{comment_author}:
+{issue['_mention_comment']}
+
+Your task:
+1. Understand the user's request in the comment
+2. Provide a helpful response by commenting on the issue
+3. If the request requires code changes, create a PR
+4. If you need more information, ask the user
+
+Respond with a comment on the issue addressing their request. Use `gh issue comment {issue['number']} --body "..."` to respond."""
         else:
             prompt = self._build_issue_prompt(issue, is_assigned)
 
