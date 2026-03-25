@@ -330,9 +330,9 @@ class GitHubAgent:
                                     issue["labels"] = full_issue.get("labels", issue.get("labels", []))
                                     issue["user"] = full_issue.get("user", issue.get("user", {}))
                                 
-                                author = issue.get("user", {}).get("login")
-                                if not self._is_contributor(repo, author):
-                                    logger.info(f"Issue #{issue['number']} author {author} is not a contributor, skipping")
+                                comment_author = comment.get("user", {}).get("login")
+                                if not self._is_contributor(repo, comment_author):
+                                    logger.info(f"Mention comment author {comment_author} is not a contributor, skipping")
                                     continue
                                 
                                 all_issues.append(issue)
