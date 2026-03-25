@@ -53,14 +53,9 @@ class GitHubAgent:
     def __init__(self):
         self.github_token = os.getenv("GITHUB_TOKEN")
         self.github_username = os.getenv("GITHUB_USERNAME", "openhands-bot")
-        repos = os.getenv("GITHUB_REPOSITORIES", "v0l,LNVPS").split(",")
-        if self.github_username and self.github_username not in repos:
-            repos.append(self.github_username)
-        self.github_repos = repos
         self.heartbeat_interval = int(os.getenv("HEARTBEAT_INTERVAL", "600"))
         self.github_api = "https://api.github.com"
         self.work_dir = os.getenv("WORK_DIR", "/tmp/openhands-work")
-        self.active_repos = []
         self.base_dir = Path(__file__).parent.resolve()
 
         # Setup LLM
@@ -100,49 +95,7 @@ class GitHubAgent:
         Path(self.work_dir).mkdir(parents=True, exist_ok=True)
 
         self._load_state()
-        self._discover_active_repos()
-        logger.info(
-            f"GitHub Agent initialized. Monitoring {len(self.active_repos)} active repos"
-        )
-
-    def _discover_active_repos(self) -> None:
-        """Discover active repos from configured accounts"""
-        self.active_repos = []
-
-        for account in self.github_repos:
-            try:
-                endpoint = f"/users/{account}/repos?type=all&sort=updated&per_page=50"
-                logger.info(f"Discovering repos for {account}...")
-                repos = self._api_request(endpoint)
-
-                logger.info(f"Got {len(repos) if repos else 0} repos from API")
-                if repos:
-                    for repo in repos:
-                        full_name = repo.get("full_name")
-                        owner = repo.get("owner", {}).get("login", "")
-                        logger.info(f"  Repo: {full_name}, Owner: {owner}, Match: {owner == account}")
-                        if full_name and owner == account:
-                            self.active_repos.append(full_name)
-
-                org_endpoint = (
-                    f"/orgs/{account}/repos?type=member&sort=updated&per_page=50"
-                )
-                org_repos = self._api_request(org_endpoint)
-
-                if org_repos:
-                    for repo in org_repos:
-                        full_name = repo.get("full_name")
-                        logger.info(f"  Org Repo: {full_name}")
-                        if full_name:
-                            self.active_repos.append(full_name)
-            except Exception as e:
-                logger.error(f"Failed to discover repos for {account}: {e}")
-
-        self.active_repos = list(set(self.active_repos))
-        logger.info(f"Discovered {len(self.active_repos)} repos")
-
-        if len(self.active_repos) > 10:
-            logger.info(f"First 10: {', '.join(self.active_repos[:10])}")
+        logger.info("GitHub Agent initialized. Using notifications API for all repos")
 
     def _load_state(self) -> None:
         """Load agent state for persistence"""
@@ -613,8 +566,7 @@ Respond with a comment on the issue addressing their request. Use `gh issue comm
             f"Starting OpenHands GitHub Agent (heartbeat every {self.heartbeat_interval}s)"
         )
         logger.info(f"Username: {self.github_username}")
-        logger.info(f"Watching accounts: {', '.join(self.github_repos)}")
-        logger.info(f"Active repos: {len(self.active_repos)}")
+        logger.info("Using GitHub notifications API for all repos")
 
         self._run_heartbeat()
 
