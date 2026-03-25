@@ -228,11 +228,12 @@ class GitHubAgent:
 
         for notification in notifications:
             reason = notification.get("reason", "")
-            if reason != "mention":
+            # Process mention, review_requested, and author notifications
+            if reason not in ["mention", "review_requested", "author"]:
                 logger.debug(f"Skipping notification (reason={reason}): {notification.get('subject',{}).get('title')}")
                 continue
 
-            logger.info(f"Processing notification: {notification.get('subject',{}).get('title')} (reason={notification.get('reason')})")
+            logger.info(f"Processing notification: {notification.get('subject',{}).get('title')} (reason={reason})")
 
             subject = notification.get("subject", {})
             subject_type = subject.get("type")
@@ -243,15 +244,6 @@ class GitHubAgent:
             if subject_type not in ["Issue", "PullRequest"]:
                 if thread_url:
                     self._mark_notification_read(thread_url)
-                continue
-            
-            # Only handle mentions and review requests
-            logger.debug(f"  Checking reason: '{reason}' in ['mention', 'review_requested', 'author'] = {reason in ['mention', 'review_requested', 'author']}")
-            if reason not in ["mention", "review_requested", "author"]:
-                # Mark as read before skipping
-                if thread_url:
-                    self._mark_notification_read(thread_url)
-                logger.info(f"  Skipping notification (reason={reason}): {notification.get('subject',{}).get('title')}")
                 continue
 
             # Get the issue/PR URL directly from notification subject
