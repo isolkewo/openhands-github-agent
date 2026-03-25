@@ -220,69 +220,6 @@ class GitHubAgent:
                 logger.error(f"Request failed: {e}")
             return None
 
-    def _get_active_prs(self) -> List[Dict]:
-        """Get open PRs needing attention across all active repos."""
-        all_prs = []
-
-        for repo in self.active_repos:
-            endpoint = f"repos/{repo}/pulls?state=open&per_page=20"
-            prs = self._api_request(endpoint)
-
-            if prs:
-                for pr in prs:
-                    pr["_repo"] = repo
-                    all_prs.append(pr)
-
-        attention_prs = []
-        for pr in all_prs:
-            if self._needs_attention(pr):
-                attention_prs.append(pr)
-
-        return attention_prs
-
-    def _needs_attention(self, pr: Dict) -> bool:
-        """Check if a PR needs attention"""
-        repo = pr.get("_repo")
-        if not repo:
-            return False
-
-        author = pr.get("user", {}).get("login")
-        if author != self.github_username:
-            logger.debug(f"PR #{pr['number']} author {author} != {self.github_username}, skipping")
-            return False
-
-        if not self._is_contributor(repo, author):
-            logger.debug(f"PR #{pr['number']} author {author} is not a contributor, skipping")
-            return False
-
-        comments_endpoint = f"repos/{repo}/pulls/{pr['number']}/reviews"
-        reviews = self._api_request(comments_endpoint)
-
-        if reviews and len(reviews) > 0:
-            # Check latest review state
-            latest_review = reviews[-1]
-            if latest_review.get("state") == "APPROVED":
-                logger.debug(f"PR #{pr['number']} has APPROVED review, skipping")
-                return False
-            if latest_review.get("state") in ["COMMENTED", "CHANGES_REQUESTED"]:
-                logger.info(f"PR #{pr['number']} has {latest_review.get('state')} review")
-                return True
-
-        if pr.get("mergeable") == False:
-            logger.info(f"PR #{pr['number']} has merge conflicts")
-            return True
-
-        comments_endpoint = f"repos/{repo}/issues/{pr['number']}/comments"
-        comments = self._api_request(comments_endpoint)
-
-        if comments:
-            for comment in comments:
-                if f"@{self.github_username}" in comment.get("body", ""):
-                    logger.info(f"PR #{pr['number']} has @{self.github_username} mentioned")
-                    return True
-
-        return False
-
     def _get_assigned_issues(self) -> List[Dict]:
         """Get issues assigned to the bot across all repos using /user/issues endpoint."""
         all_issues = []
@@ -458,59 +395,6 @@ class GitHubAgent:
         
         return True
 
-    def _handle_pr(self, pr: Dict) -> bool:
-        """Handle a PR that needs attention"""
-        repo = pr.get("_repo")
-        pr_number = pr["number"]
-        logger.info(f"Handling PR #{repo}#{pr_number}: {pr['title']}")
-
-        import uuid
-        conv_id_str = f"{repo.replace('/', '_')}_pr_{pr_number}"
-        conv_id = uuid.uuid5(uuid.NAMESPACE_DNS, conv_id_str)
-        conv_state_dir = self.state_dir / "conversations" / conv_id_str
-        conv_state_dir.mkdir(parents=True, exist_ok=True)
-
-        logger.info(f"Starting conversation for PR #{pr_number} (id: {conv_id})")
-
-        conversation = Conversation(
-            agent=self.agent,
-            workspace=str(self.work_dir),
-            persistence_dir=str(conv_state_dir),
-            conversation_id=conv_id,
-        )
-
-        prompt = self._build_pr_prompt(pr)
-        conversation.send_message(prompt)
-        conversation.run()
-        self._save_state()
-        return True
-
-    def _build_pr_prompt(self, pr: Dict) -> str:
-        """Build prompt for PR handling"""
-        repo = pr.get("_repo")
-        prompt = rf"""
-        Work on PR #{pr["number"]}: {pr["title"]}
-        Repo: {repo}
-        https://github.com/{repo}/pull/{pr["number"]}
-
-        Use `gh` CLI for GitHub operations:
-        - gh api repos/{repo}/pulls/{pr["number"]}/comments | jq -r '.[] | "\(.path):\(.line) = \(.body)"' - get inline review comments
-        - gh api repos/{repo}/issues/{pr["number"]}/comments | jq -r '.[] | "\(.user.login): \(.body)"' - get conversation comments
-        - gh pr checkout {pr["number"]} - checkout PR branch
-        - gh repo clone {repo} - clone EXACTLY this repo: {repo}
-        - git push origin <branch> - push to your fork
-        - gh pr create - create PR after pushing
-
-        This PR has CHANGES_REQUESTED review. Address all feedback and push updates.
-        """
-        return prompt
-
-    def _comment_on_pr(self, repo: str, pr_number: int, body: str) -> None:
-        """Add comment to PR"""
-        endpoint = f"repos/{repo}/issues/{pr_number}/comments"
-        self._api_request(endpoint, "POST", {"body": body})
-        logger.info(f"Commented on PR #{repo}#{pr_number}")
-
     def _comment_on_issue(self, repo: str, issue_number: int, body: str) -> None:
         """Add comment to issue"""
         endpoint = f"repos/{repo}/issues/{issue_number}/comments"
@@ -637,18 +521,7 @@ Respond with a comment on the issue addressing their request. Use `gh issue comm
         timestamp = datetime.now().isoformat()
 
         try:
-            # 1. Handle PRs needing attention
-            logger.info("Checking PRs needing attention...")
-            prs = self._get_active_prs()
-            logger.info(f"Found {len(prs)} PRs needing attention")
-
-            for pr in prs:
-                try:
-                    self._handle_pr(pr)
-                except Exception as e:
-                    logger.error(f"Failed to handle PR #{pr['number']}: {e}")
-
-            # 2. Handle assigned issues
+            # 1. Handle assigned issues
             logger.info("Checking assigned issues...")
             assigned_issues = self._get_assigned_issues()
             logger.info(f"Found {len(assigned_issues)} assigned issues")
