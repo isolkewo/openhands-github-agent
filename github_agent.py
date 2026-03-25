@@ -237,13 +237,19 @@ class GitHubAgent:
             subject = notification.get("subject", {})
             subject_type = subject.get("type")
             reason = notification.get("reason", "")
+            thread_url = notification.get("url")
             logger.debug(f"  Subject type: {subject_type}, Reason: {reason}")
             # Only process Issue and PullRequest notifications
             if subject_type not in ["Issue", "PullRequest"]:
+                if thread_url:
+                    self._mark_notification_read(thread_url)
                 continue
             
             # Only handle mentions and review requests
             if reason not in ["mention", "review_requested", "author"]:
+                # Mark as read before skipping
+                if thread_url:
+                    self._mark_notification_read(thread_url)
                 logger.info(f"  Skipping notification (reason={reason}): {notification.get('subject',{}).get('title')}")
                 continue
 
@@ -252,10 +258,9 @@ class GitHubAgent:
             logger.debug(f"  Issue/PR URL: {issue_url}")
             if not issue_url:
                 logger.debug(f"  No URL in notification")
+                if thread_url:
+                    self._mark_notification_read(thread_url)
                 continue
-
-            # Also save thread URL for marking as read later
-            thread_url = notification.get("url")
 
             # Extract repo and number from URL
             # URL format: https://api.github.com/repos/{owner}/{repo}/issues/{number}
@@ -328,12 +333,14 @@ class GitHubAgent:
                 
                 # Check if comment author is allowed to mention the bot
                 if self.allowed_mentioners and comment_author not in self.allowed_mentioners:
-                    logger.info(f"Mention from {comment_author} - not in allowed list, skipping")
+                    logger.info(f"Mention from {comment_author} - not in allowed list, marking as read")
+                    self._mark_notification_read(thread_url)
                     continue
                 
                 # Check if comment author is a contributor to the repo where the issue exists
                 if not self._is_contributor(full_repo, comment_author):
-                    logger.info(f"Mention from {comment_author} on {full_repo} - not a contributor, skipping")
+                    logger.info(f"Mention from {comment_author} on {full_repo} - not a contributor, marking as read")
+                    self._mark_notification_read(thread_url)
                     continue
 
             logger.info(f"Found mention from {comment_author} on {full_repo}#{number}")
