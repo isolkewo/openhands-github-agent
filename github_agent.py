@@ -324,14 +324,8 @@ class GitHubAgent:
 
                 logger.info(f"Comment author: {comment_author} on {full_repo}")
                 
-                # Check if comment author is allowed to mention the bot
-                if self.allowed_mentioners and comment_author not in self.allowed_mentioners:
-                    logger.info(f"Mention from {comment_author} - not in allowed list, marking as read")
-                    self._mark_notification_read(thread_url)
-                    continue
-                
                 # For PRs, only respond if commenter is the repo owner or has done a review
-                # For issues, check if they're allowed to mention the bot
+                # For issues, check whitelist and contributors
                 if is_pr:
                     # Check if commenter is the repo owner
                     repo_owner = issue_details.get("user", {}).get("login")
@@ -341,10 +335,18 @@ class GitHubAgent:
                         logger.info(f"Mention from {comment_author} on PR {full_repo}#{number} - not owner or reviewer, marking as read")
                         self._mark_notification_read(thread_url)
                         continue
-                elif not self._is_contributor(full_repo, comment_author):
-                    logger.info(f"Mention from {comment_author} on {full_repo} - not a contributor, marking as read")
-                    self._mark_notification_read(thread_url)
-                    continue
+                else:
+                    # For issues, check whitelist first
+                    if self.allowed_mentioners and comment_author not in self.allowed_mentioners:
+                        logger.info(f"Mention from {comment_author} on issue - not in allowed list, marking as read")
+                        self._mark_notification_read(thread_url)
+                        continue
+                    
+                    # Then check if contributor
+                    if not self._is_contributor(full_repo, comment_author):
+                        logger.info(f"Mention from {comment_author} on {full_repo} - not a contributor, marking as read")
+                        self._mark_notification_read(thread_url)
+                        continue
 
             logger.info(f"Found mention from {comment_author} on {full_repo}#{number}")
 
