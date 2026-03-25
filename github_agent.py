@@ -57,6 +57,10 @@ class GitHubAgent:
         self.github_api = "https://api.github.com"
         self.work_dir = os.getenv("WORK_DIR", "/tmp/openhands-work")
         self.base_dir = Path(__file__).parent.resolve()
+        
+        # Allowed mentioners - only respond to mentions from these users
+        allowed = os.getenv("ALLOWED_MENTIONERS", "")
+        self.allowed_mentioners = [u.strip() for u in allowed.split(",") if u.strip()] if allowed else None
 
         # Setup LLM
         llm = LLM(
@@ -304,6 +308,11 @@ class GitHubAgent:
                 continue
 
             logger.info(f"Comment author: {comment_author} on {full_repo}")
+            
+            # Check if comment author is allowed to mention the bot
+            if self.allowed_mentioners and comment_author not in self.allowed_mentioners:
+                logger.info(f"Mention from {comment_author} - not in allowed list, skipping")
+                continue
             
             # Check if comment author is a contributor to the repo where the issue exists
             if not self._is_contributor(full_repo, comment_author):
