@@ -246,6 +246,7 @@ class GitHubAgent:
                 continue
             
             # Only handle mentions and review requests
+            logger.debug(f"  Checking reason: '{reason}' in ['mention', 'review_requested', 'author'] = {reason in ['mention', 'review_requested', 'author']}")
             if reason not in ["mention", "review_requested", "author"]:
                 # Mark as read before skipping
                 if thread_url:
