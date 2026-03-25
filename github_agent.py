@@ -48,7 +48,10 @@ class GitHubAgent:
     def __init__(self):
         self.github_token = os.getenv("GITHUB_TOKEN")
         self.github_username = os.getenv("GITHUB_USERNAME", "openhands-bot")
-        self.github_repos = os.getenv("GITHUB_REPOSITORIES", "v0l,LNVPS").split(",")
+        repos = os.getenv("GITHUB_REPOSITORIES", "v0l,LNVPS").split(",")
+        if self.github_username and self.github_username not in repos:
+            repos.append(self.github_username)
+        self.github_repos = repos
         self.heartbeat_interval = int(os.getenv("HEARTBEAT_INTERVAL", "600"))
         self.github_api = "https://api.github.com"
         self.work_dir = os.getenv("WORK_DIR", "/tmp/openhands-work")
