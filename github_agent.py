@@ -328,6 +328,7 @@ class GitHubAgent:
             issue_details["_is_pr"] = is_pr
             issue_details["number"] = number
             issue_details["_thread_url"] = thread_url
+            issue_details["_comment_author"] = comment_author
 
             all_issues.append(issue_details)
 
@@ -377,7 +378,7 @@ class GitHubAgent:
             conversation_id=conv_id,
         )
 
-        comment_author = pr.get("user", {}).get("login", "user")
+        comment_author = pr.get("_comment_author", pr.get("user", {}).get("login", "user"))
         mention_comment = pr.get("_mention_comment", "")
         prompt = f"""A user tagged you in a comment on this PR. Respond to their request.
 
@@ -452,7 +453,7 @@ Use `gh` CLI to checkout the PR: `gh pr checkout {pr_number}`"""
         )
 
         if issue.get("_mention_comment"):
-            comment_author = issue.get("user", {}).get("login", "user")
+            comment_author = issue.get("_comment_author", issue.get("user", {}).get("login", "user"))
             prompt = f"""A user tagged you in a comment on this issue. Respond to their request.
 
 Issue: #{issue['number']} - {issue['title']}
