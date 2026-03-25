@@ -37,6 +37,7 @@ handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"
 logger.addHandler(handler)
 
 from openhands.sdk import LLM, Agent, Conversation, Tool
+from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal import TerminalTool
@@ -66,7 +67,7 @@ class GitHubAgent:
             disable_vision=True,
         )
 
-        # Create agent with tools
+        # Create agent with tools and conversation condenser
         self.agent = Agent(
             llm=llm,
             tools=[
@@ -76,6 +77,11 @@ class GitHubAgent:
             ],
             system_prompt_filename=str(self.base_dir / "prompts/github_agent_system_prompt.j2"),
             system_prompt_kwargs={"llm_security_analyzer": False},
+            condenser=LLMSummarizingCondenser(
+                llm=llm,
+                max_size=100,
+                keep_first=10,
+            ),
         )
 
         self.work_dir = os.getenv("WORK_DIR", "/tmp/openhands-work")
@@ -375,7 +381,6 @@ class GitHubAgent:
         prompt = self._build_pr_prompt(pr)
         conversation.send_message(prompt)
         conversation.run()
-
         self._save_state()
         return True
 
@@ -467,7 +472,6 @@ Please work on this issue."""
 
         conversation.send_message(prompt)
         conversation.run()
-
         self._save_state()
         return True
 
