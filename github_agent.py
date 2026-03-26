@@ -348,7 +348,7 @@ class GitHubAgent:
 
                 logger.info(f"Comment author: {comment_author} on {full_repo}")
                 
-                # For PRs, only respond if commenter is the repo owner or has done a review
+                # For PRs, only respond if commenter is the repo owner, whitelisted, has reviewed, or is PR author
                 # For issues, check whitelist and contributors
                 if is_pr:
                     # Fetch repo details to get the actual repo owner (not PR author)
@@ -358,7 +358,10 @@ class GitHubAgent:
                     pr_author = issue_details.get("user", {}).get("login")
                     has_review = self._has_reviewed_pr(full_repo, number, comment_author)
                     
-                    if comment_author != pr_author and comment_author != actual_repo_owner and not has_review:
+                    # Check whitelist first
+                    is_whitelisted = not self.allowed_mentioners or comment_author in self.allowed_mentioners
+                    
+                    if comment_author != pr_author and comment_author != actual_repo_owner and not has_review and not is_whitelisted:
                         logger.info(f"Mention from {comment_author} on PR {full_repo}#{number} - not owner or reviewer, marking as read")
                         self._mark_notification_read(thread_url)
                         continue
