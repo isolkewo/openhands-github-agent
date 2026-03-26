@@ -619,14 +619,14 @@ Respond with a comment on the issue addressing their request. Use `gh issue comm
           4. Create PR from your fork: gh pr create --head <your-username>:<branch-name>
         - git push origin <branch> - push to your fork or the repo if you have access
         - gh pr create --title "Fix #{issue["number"]}: {issue.get('title', 'Issue')}" --body "PR description" - to create a PR
-        - IMPORTANT: For multi-line comments, use heredoc format to preserve actual newlines:
+        - IMPORTANT: For multi-line comments, use `--body-file -` to read from stdin:
           ```
-          gh issue comment {issue["number"]} << 'EOF'
+          gh issue comment {issue["number"]} --body-file - << 'EOF'
           Line 1
           Line 2
           EOF
           ```
-        - NEVER use --body with literal \n characters - always use heredoc for multi-line content
+        - NEVER use --body with literal \n characters - always use `--body-file -` for multi-line content
 
         When creating a PR, use the following body format:
         ```
