@@ -351,11 +351,14 @@ class GitHubAgent:
                 # For PRs, only respond if commenter is the repo owner or has done a review
                 # For issues, check whitelist and contributors
                 if is_pr:
-                    # Check if commenter is the repo owner
-                    repo_owner = issue_details.get("user", {}).get("login")
+                    # Fetch repo details to get the actual repo owner (not PR author)
+                    repo_info = self._api_request(f"repos/{full_repo}", silent=True)
+                    actual_repo_owner = repo_info.get("owner", {}).get("login") if repo_info else None
+                    
+                    pr_author = issue_details.get("user", {}).get("login")
                     has_review = self._has_reviewed_pr(full_repo, number, comment_author)
                     
-                    if comment_author != repo_owner and not has_review:
+                    if comment_author != pr_author and comment_author != actual_repo_owner and not has_review:
                         logger.info(f"Mention from {comment_author} on PR {full_repo}#{number} - not owner or reviewer, marking as read")
                         self._mark_notification_read(thread_url)
                         continue
@@ -538,6 +541,22 @@ Use `gh` CLI to checkout the PR: `gh pr checkout {pr_number}`"""
 
         logger.info(f"Starting conversation for issue #{issue_number} (id: {conv_id})")
 
+        # Configure git identity to ensure commits use correct email/name
+        import subprocess
+        git_email = os.getenv("GIT_USER_EMAIL", f"{self.github_username}@users.noreply.github.com")
+        git_name = os.getenv("GIT_USER_NAME", self.github_username)
+        try:
+            subprocess.run(
+                ["git", "config", "--global", "user.email", git_email],
+                check=True, capture_output=True
+            )
+            subprocess.run(
+                ["git", "config", "--global", "user.name", git_name],
+                check=True, capture_output=True
+            )
+        except Exception as e:
+            logger.warning(f"Failed to configure git: {e}")
+
         conversation = Conversation(
             agent=self.agent,
             workspace=str(self.work_dir),
@@ -590,8 +609,21 @@ Respond with a comment on the issue addressing their request. Use `gh issue comm
         - gh issue comment {issue["number"]} --body "..." - to comment
         - gh repo clone {repo} - clone this repo: {repo}
         - If you don't have write access to {repo}, fork first: gh repo fork {repo} --clone=true
+        - IMPORTANT: If `git push` fails with permission error:
+          1. Check if you forked the repo
+          2. If not, fork it: gh repo fork {repo} --clone=true
+          3. Push to your fork: git push origin <branch-name>
+          4. Create PR from your fork: gh pr create --head <your-username>:<branch-name>
         - git push origin <branch> - push to your fork or the repo if you have access
         - gh pr create --title "Fix #{issue["number"]}: {issue.get('title', 'Issue')}" --body "PR description" - to create a PR
+        - IMPORTANT: For multi-line comments, use heredoc format to preserve actual newlines:
+          ```
+          gh issue comment {issue["number"]} << 'EOF'
+          Line 1
+          Line 2
+          EOF
+          ```
+        - NEVER use --body with literal \n characters - always use heredoc for multi-line content
 
         When creating a PR, use the following body format:
         ```
