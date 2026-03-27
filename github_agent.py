@@ -501,6 +501,54 @@ Use `gh` CLI to checkout the PR: `gh pr checkout {pr_number}`"""
         self._save_state()
         return True
 
+    def _build_pr_prompt(self, pr: Dict) -> str:
+        """Build prompt for PR handling"""
+        repo = pr.get("_repo")
+        # Get the PR branch name from the head ref
+        pr_branch = pr.get("head", {}).get("ref", f"pr-{pr['number']}")
+        # Get the head repo for push destination
+        head_repo = pr.get("head", {}).get("repo", {}).get("full_name", repo)
+        
+        prompt = f"""
+        Work on PR #{pr["number"]}: {pr["title"]}
+        Repo: {repo}
+        PR Branch: {pr_branch}
+        Head Repo: {head_repo}
+        https://github.com/{repo}/pull/{pr["number"]}
+
+        Use `gh` CLI for GitHub operations:
+        - gh api repos/{repo}/pulls/{pr["number"]}/comments | jq -r '.[] | "\(.path):\(.line) = \(.body)"' - get review comments as file:line = comment
+        - gh pr checkout {pr["number"]} - checkout PR branch
+        - gh repo clone {repo} - clone EXACTLY this repo: {repo}
+        - git push origin {pr_branch} - push to the PR branch (NOT main/master)
+        - gh pr create - create PR after pushing
+
+        This PR has CHANGES_REQUESTED review. Address all feedback and push updates.
+        
+        IMPORTANT BRANCH INFORMATION:
+        - origin: The remote pointing to {head_repo} (your fork or the repo)
+        - pr-branch-name: {pr_branch}
+        - ALWAYS push to the {pr_branch} branch, never to main or master
+        - After making changes, push with: git push origin {pr_branch}
+        
+        IMPORTANT: Work off a CLEAN main/master branch locally
+        - Before starting, ensure your local main/master is clean and up-to-date
+        - Run: git checkout main && git pull origin main (or use master if that's the default)
+        - Check for existing commits: git log --oneline -5
+        - If there are uncommitted changes, commit or stash them first
+        - This prevents confusion when creating feature branches from main/master
+        
+        IMPORTANT: Clone ONLY the repo specified above: {repo}
+        IMPORTANT: When commenting on PR, use actual line breaks not \\n characters
+        """
+        return prompt
+
+    def _comment_on_pr(self, repo: str, pr_number: int, body: str) -> None:
+        """Add comment to PR"""
+        endpoint = f"repos/{repo}/issues/{pr_number}/comments"
+        self._api_request(endpoint, "POST", {"body": body})
+        logger.info(f"Commented on PR #{repo}#{pr_number}")
+
     def _comment_on_issue(self, repo: str, issue_number: int, body: str) -> None:
         """Add comment to issue"""
         endpoint = f"repos/{repo}/issues/{issue_number}/comments"
