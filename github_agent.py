@@ -409,6 +409,13 @@ class GitHubAgent:
         - ALWAYS push to the {pr_branch} branch, never to main or master
         - After making changes, push with: git push origin {pr_branch}
         
+        IMPORTANT: Work off a CLEAN main/master branch locally
+        - Before starting, ensure your local main/master is clean and up-to-date
+        - Run: git checkout main && git pull origin main (or use master if that's the default)
+        - Check for existing commits: git log --oneline -5
+        - If there are uncommitted changes, commit or stash them first
+        - This prevents confusion when creating feature branches from main/master
+        
         IMPORTANT: Clone ONLY the repo specified above: {repo}
         IMPORTANT: When commenting on PR, use actual line breaks not \\n characters
         """
