@@ -37,7 +37,12 @@ handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"
 logger.addHandler(handler)
 
 from openhands.sdk import LLM, Agent, Conversation, Tool
+from openhands.sdk.context.condenser import LLMSummarizingCondenser
+from openhands.tools.apply_patch import ApplyPatchTool
+from openhands.tools.delegate import DelegateTool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.glob import GlobTool
+from openhands.tools.grep import GrepTool
 from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal import TerminalTool
 
@@ -48,15 +53,14 @@ class GitHubAgent:
     def __init__(self):
         self.github_token = os.getenv("GITHUB_TOKEN")
         self.github_username = os.getenv("GITHUB_USERNAME", "openhands-bot")
-        repos = os.getenv("GITHUB_REPOSITORIES", "v0l,LNVPS").split(",")
-        if self.github_username and self.github_username not in repos:
-            repos.append(self.github_username)
-        self.github_repos = repos
         self.heartbeat_interval = int(os.getenv("HEARTBEAT_INTERVAL", "600"))
         self.github_api = "https://api.github.com"
         self.work_dir = os.getenv("WORK_DIR", "/tmp/openhands-work")
-        self.active_repos = []
         self.base_dir = Path(__file__).parent.resolve()
+        
+        # Allowed mentioners - only respond to mentions from these users
+        allowed = os.getenv("ALLOWED_MENTIONERS", "")
+        self.allowed_mentioners = [u.strip() for u in allowed.split(",") if u.strip()] if allowed else None
 
         # Setup LLM
         llm = LLM(
@@ -66,16 +70,25 @@ class GitHubAgent:
             disable_vision=True,
         )
 
-        # Create agent with tools
+        # Create agent with tools and conversation condenser
         self.agent = Agent(
             llm=llm,
             tools=[
                 Tool(name=TerminalTool.name),
                 Tool(name=FileEditorTool.name),
                 Tool(name=TaskTrackerTool.name),
+                Tool(name=GlobTool.name),
+                Tool(name=GrepTool.name),
+                Tool(name=ApplyPatchTool.name),
+                Tool(name=DelegateTool.name),
             ],
             system_prompt_filename=str(self.base_dir / "prompts/github_agent_system_prompt.j2"),
             system_prompt_kwargs={"llm_security_analyzer": False},
+            condenser=LLMSummarizingCondenser(
+                llm=llm,
+                max_size=100,
+                keep_first=10,
+            ),
         )
 
         self.work_dir = os.getenv("WORK_DIR", "/tmp/openhands-work")
@@ -86,49 +99,7 @@ class GitHubAgent:
         Path(self.work_dir).mkdir(parents=True, exist_ok=True)
 
         self._load_state()
-        self._discover_active_repos()
-        logger.info(
-            f"GitHub Agent initialized. Monitoring {len(self.active_repos)} active repos"
-        )
-
-    def _discover_active_repos(self) -> None:
-        """Discover active repos from configured accounts"""
-        self.active_repos = []
-
-        for account in self.github_repos:
-            try:
-                endpoint = f"/users/{account}/repos?type=all&sort=updated&per_page=50"
-                logger.info(f"Discovering repos for {account}...")
-                repos = self._api_request(endpoint)
-
-                logger.info(f"Got {len(repos) if repos else 0} repos from API")
-                if repos:
-                    for repo in repos:
-                        full_name = repo.get("full_name")
-                        owner = repo.get("owner", {}).get("login", "")
-                        logger.info(f"  Repo: {full_name}, Owner: {owner}, Match: {owner == account}")
-                        if full_name and owner == account:
-                            self.active_repos.append(full_name)
-
-                org_endpoint = (
-                    f"/orgs/{account}/repos?type=member&sort=updated&per_page=50"
-                )
-                org_repos = self._api_request(org_endpoint)
-
-                if org_repos:
-                    for repo in org_repos:
-                        full_name = repo.get("full_name")
-                        logger.info(f"  Org Repo: {full_name}")
-                        if full_name:
-                            self.active_repos.append(full_name)
-            except Exception as e:
-                logger.error(f"Failed to discover repos for {account}: {e}")
-
-        self.active_repos = list(set(self.active_repos))
-        logger.info(f"Discovered {len(self.active_repos)} repos")
-
-        if len(self.active_repos) > 10:
-            logger.info(f"First 10: {', '.join(self.active_repos[:10])}")
+        logger.info("GitHub Agent initialized. Using notifications API for all repos")
 
     def _load_state(self) -> None:
         """Load agent state for persistence"""
@@ -171,7 +142,12 @@ class GitHubAgent:
         import urllib.request
         import urllib.error
 
-        url = f"{self.github_api}/{endpoint.lstrip("/")}"
+        # Handle full URLs from notifications directly
+        if endpoint.startswith("https://"):
+            url = endpoint
+        else:
+            url = f"{self.github_api}/{endpoint.lstrip("/")}"
+        
         headers = {
             "Authorization": f"token {self.github_token}",
             "Accept": "application/vnd.github.v3+json",
@@ -197,134 +173,248 @@ class GitHubAgent:
                 logger.error(f"Request failed: {e}")
             return None
 
-    def _get_active_prs(self) -> List[Dict]:
-        """Get open PRs needing attention across all active repos"""
-        all_prs = []
-
-        for repo in self.active_repos:
-            endpoint = f"repos/{repo}/pulls?state=open&per_page=20"
-            prs = self._api_request(endpoint)
-
-            if prs:
-                for pr in prs:
-                    pr["_repo"] = repo
-                    all_prs.append(pr)
-
-        attention_prs = []
-        for pr in all_prs:
-            if self._needs_attention(pr):
-                attention_prs.append(pr)
-
-        return attention_prs
-
-    def _needs_attention(self, pr: Dict) -> bool:
-        """Check if a PR needs attention"""
-        repo = pr.get("_repo")
-        if not repo:
-            return False
-
-        author = pr.get("user", {}).get("login")
-        if author != self.github_username:
-            logger.debug(f"PR #{pr['number']} author {author} != {self.github_username}, skipping")
-            return False
-
-        if not self._is_contributor(repo, author):
-            logger.debug(f"PR #{pr['number']} author {author} is not a contributor, skipping")
-            return False
-
-        comments_endpoint = f"repos/{repo}/pulls/{pr['number']}/reviews"
-        reviews = self._api_request(comments_endpoint)
-
-        if reviews:
-            # Check latest review state
-            latest_review = reviews[-1]
-            if latest_review.get("state") == "APPROVED":
-                logger.debug(f"PR #{pr['number']} has APPROVED review, skipping")
-                return False
-            if latest_review.get("state") in ["COMMENTED", "CHANGES_REQUESTED"]:
-                logger.info(f"PR #{pr['number']} has {latest_review.get('state')} review")
-                return True
-
-        if pr.get("mergeable") == False:
-            logger.info(f"PR #{pr['number']} has merge conflicts")
-            return True
-
-        comments_endpoint = f"repos/{repo}/issues/{pr['number']}/comments"
-        comments = self._api_request(comments_endpoint)
-
-        if comments:
-            for comment in comments:
-                if f"@{self.github_username}" in comment.get("body", ""):
-                    logger.info(f"PR #{pr['number']} has @{self.github_username} mentioned")
-                    return True
-
-        return False
-
     def _get_assigned_issues(self) -> List[Dict]:
-        """Get issues assigned to the bot across all repos"""
+        """Get issues assigned to the bot across all repos using /user/issues endpoint."""
         all_issues = []
-
-        for repo in self.active_repos:
-            endpoint = f"repos/{repo}/issues?state=open&assignee={self.github_username}&per_page=20"
-            issues = self._api_request(endpoint)
-
-            if issues:
-                for issue in issues:
-                    if "pull_request" not in issue:
-                        author = issue.get("user", {}).get("login")
-                        if not self._is_contributor(repo, author):
-                            logger.info(f"Assigned issue #{issue['number']} author {author} is not a contributor, skipping")
-                            continue
+        
+        # Use the /user/issues endpoint - finds issues assigned to auth user across all repos
+        # This is much faster than iterating through each repo
+        endpoint = f"user/issues?assignee={self.github_username}&state=open&per_page=100"
+        issues = self._api_request(endpoint)
+        
+        if issues:
+            for issue in issues:
+                if "pull_request" not in issue:
+                    # Extract repo from repository_url
+                    repo_url = issue.get("repository_url", "")
+                    parts = repo_url.rstrip("/").split("/")
+                    if len(parts) >= 2:
+                        repo = f"{parts[-2]}/{parts[-1]}"
                         issue["_repo"] = repo
                         all_issues.append(issue)
 
         return all_issues
 
+    def _mark_notification_read(self, thread_url: str) -> None:
+        """Mark a notification thread as read."""
+        try:
+            # Extract thread ID from URL and use proper endpoint format
+            # URL: https://api.github.com/notifications/threads/{id}
+            parts = thread_url.rstrip('/').split('/')
+            if len(parts) >= 2:
+                thread_id = parts[-1]
+                endpoint = f"notifications/threads/{thread_id}"
+                self._api_request(endpoint, "PATCH", {"last_read_at": datetime.now().isoformat()})
+                logger.debug(f"Marked notification as read: {thread_id}")
+        except Exception as e:
+            logger.debug(f"Failed to mark notification as read: {e}")
+
     def _get_mentioned_issues(self) -> List[Dict]:
-        """Get issues where the bot is mentioned - looks for issue reference in comment"""
+        """Get issues where the bot is mentioned via GitHub notifications API.
+        
+        Fetches all notifications across all repos, filters for mentions from
+        contributors in watched repos, and returns the referenced issues.
+        """
         all_issues = []
 
-        for repo in self.active_repos:
-            endpoint = f"repos/{repo}/issues?state=open&per_page=50"
-            issues = self._api_request(endpoint)
+        # Fetch all notifications for the authenticated user
+        notifications = self._api_request("notifications?participating=false&per_page=100")
+        
+        if not notifications:
+            logger.info("No notifications found")
+            return all_issues
 
-            if issues:
-                for issue in issues:
-                    if issue.get("assignee") or "pull_request" in issue:
+        logger.info(f"Total notifications: {len(notifications)}")
+
+        for notification in notifications:
+            reason = notification.get("reason", "")
+            # Process mention, review_requested, and author notifications
+            if reason not in ["mention", "review_requested", "author"]:
+                logger.debug(f"Skipping notification (reason={reason}): {notification.get('subject',{}).get('title')}")
+                continue
+
+            logger.info(f"Processing notification: {notification.get('subject',{}).get('title')} (reason={reason})")
+
+            subject = notification.get("subject", {})
+            subject_type = subject.get("type")
+            reason = notification.get("reason", "")
+            thread_url = notification.get("url")
+            logger.debug(f"  Subject type: {subject_type}, Reason: {reason}")
+            # Only process Issue and PullRequest notifications
+            if subject_type not in ["Issue", "PullRequest"]:
+                if thread_url:
+                    self._mark_notification_read(thread_url)
+                continue
+
+            # Get the issue/PR URL directly from notification subject
+            issue_url = subject.get("url")
+            logger.debug(f"  Issue/PR URL: {issue_url}")
+            if not issue_url:
+                logger.debug(f"  No URL in notification")
+                if thread_url:
+                    self._mark_notification_read(thread_url)
+                continue
+
+            # Extract repo and number from URL
+            # URL format: https://api.github.com/repos/{owner}/{repo}/issues/{number}
+            # PRs use the same /issues/ endpoint
+            try:
+                parts = issue_url.rstrip('/').split('/')
+                logger.debug(f"  URL parts: {parts}")
+                if len(parts) >= 7 and parts[-2] in ['issues', 'pulls']:
+                    owner = parts[-4]
+                    repo_name = parts[-3]
+                    number = int(parts[-1])
+                    full_repo = f"{owner}/{repo_name}"
+                    logger.info(f"  Parsed: {full_repo}#{number} (reason={reason})")
+                else:
+                    logger.info(f"  Invalid URL format: {issue_url}")
+                    continue
+            except (ValueError, IndexError) as e:
+                logger.debug(f"  URL parse error: {e}")
+                continue
+
+            # Fetch the issue/PR to get the comments and check who mentioned us
+            issue_details = self._api_request(issue_url)
+            
+            if not issue_details:
+                logger.debug(f"  Failed to fetch issue details")
+                continue
+
+            logger.debug(f"  Issue/PR: {full_repo}#{number}")
+            is_pr = parts[-2] == 'pulls'
+
+            # For review_requested/author notifications, fetch the actual review
+            if reason in ["review_requested", "author"]:
+                logger.info(f"Processing {reason} notification for PR #{number}")
+                logger.debug(f"  is_pr detected: {parts[-2] == 'pulls'}")
+                is_pr = True  # review_requested and author are always PRs
+                
+                # Fetch reviews to get the actual review body
+                reviews_endpoint = f"repos/{full_repo}/pulls/{number}/reviews?per_page=100"
+                reviews = self._api_request(reviews_endpoint)
+                
+                comment_author = None
+                mention_comment_body = ""
+                
+                if reviews:
+                    sorted_reviews = sorted(
+                        [r for r in reviews if r.get("submitted_at")],
+                        key=lambda x: x.get("submitted_at", ""),
+                        reverse=True
+                    )
+                    for review in sorted_reviews:
+                        reviewer = review.get("user", {}).get("login")
+                        body = review.get("body") or f"Review by {reviewer}"
+                        comment_author = reviewer
+                        mention_comment_body = body
+                        logger.info(f"Found review from {comment_author}")
+                        break
+                
+                if not comment_author:
+                    comment_author = issue_details.get("user", {}).get("login", "user")
+                    mention_comment_body = f"Review requested on this PR by {comment_author}"
+                
+                logger.info(f"  PR author: {comment_author}, will process")
+            else:
+                # For mentions, fetch comments to find who mentioned us
+                comments_endpoint = f"repos/{full_repo}/issues/{number}/comments"
+                comments = self._api_request(comments_endpoint)
+                
+                logger.debug(f"  Got {len(comments) if comments else 0} comments")
+                
+                # Find the most recent comment that mentions us
+                comment_author = None
+                mention_comment_body = ""
+                
+                if comments:
+                    # Sort comments by creation date (newest first) and find the first mention
+                    sorted_comments = sorted(
+                        [c for c in comments if c.get("created_at")],
+                        key=lambda x: x.get("created_at", ""),
+                        reverse=True
+                    )
+                    for comment in sorted_comments:
+                        body = comment.get("body", "")
+                        if f"@{self.github_username}" in body:
+                            comment_author = comment.get("user", {}).get("login")
+                            mention_comment_body = body
+                            logger.info(f"  Found most recent mention from {comment_author}")
+                            break
+
+                if not comment_author:
+                    logger.debug(f"  Could not find comment with @{self.github_username}")
+                    continue
+
+                logger.info(f"Comment author: {comment_author} on {full_repo}")
+                
+                # For PRs, only respond if commenter is the repo owner, whitelisted, has reviewed, or is PR author
+                # For issues, check whitelist and contributors
+                if is_pr:
+                    # Fetch repo details to get the actual repo owner (not PR author)
+                    repo_info = self._api_request(f"repos/{full_repo}", silent=True)
+                    actual_repo_owner = repo_info.get("owner", {}).get("login") if repo_info else None
+                    
+                    pr_author = issue_details.get("user", {}).get("login")
+                    has_review = self._has_reviewed_pr(full_repo, number, comment_author)
+                    
+                    # Check whitelist first
+                    is_whitelisted = not self.allowed_mentioners or comment_author in self.allowed_mentioners
+                    
+                    if comment_author != pr_author and comment_author != actual_repo_owner and not has_review and not is_whitelisted:
+                        logger.info(f"Mention from {comment_author} on PR {full_repo}#{number} - not owner or reviewer, marking as read")
+                        self._mark_notification_read(thread_url)
+                        continue
+                else:
+                    # For issues, check whitelist first
+                    if self.allowed_mentioners and comment_author not in self.allowed_mentioners:
+                        logger.info(f"Mention from {comment_author} on issue - not in allowed list, marking as read")
+                        self._mark_notification_read(thread_url)
+                        continue
+                    
+                    # Then check if contributor
+                    if not self._is_contributor(full_repo, comment_author):
+                        logger.info(f"Mention from {comment_author} on {full_repo} - not a contributor, marking as read")
+                        self._mark_notification_read(thread_url)
                         continue
 
-                    comments_endpoint = f"repos/{repo}/issues/{issue['number']}/comments"
-                    comments = self._api_request(comments_endpoint)
+            logger.info(f"Found mention from {comment_author} on {full_repo}#{number}")
 
-                    if comments:
-                        for comment in comments:
-                            body = comment.get("body", "")
-                            if f"@{self.github_username}" in body:
-                                match = re.search(r'#(\d+)|github\.com/.+?/(?:issues|pull)/(\d+)', body)
-                                if match:
-                                    ref_num = int(match.group(1) or match.group(2))
-                                    if ref_num != issue["number"]:
-                                        ref_issue = self._api_request(f"repos/{repo}/issues/{ref_num}")
-                                        if ref_issue and "pull_request" not in ref_issue:
-                                            issue = ref_issue
-                                issue["_repo"] = repo
-                                issue["_mention_comment"] = body
-                                full_issue = self._api_request(f"repos/{repo}/issues/{issue['number']}", silent=True)
-                                if full_issue:
-                                    issue["title"] = full_issue.get("title", issue["title"])
-                                    issue["body"] = full_issue.get("body", issue.get("body", ""))
-                                    issue["labels"] = full_issue.get("labels", issue.get("labels", []))
-                                    issue["user"] = full_issue.get("user", issue.get("user", {}))
-                                
-                                author = issue.get("user", {}).get("login")
-                                if not self._is_contributor(repo, author):
-                                    logger.info(f"Issue #{issue['number']} author {author} is not a contributor, skipping")
-                                    continue
-                                
-                                all_issues.append(issue)
-                                break
+            # Skip if already assigned (for issues) - but mark as read
+            if not is_pr and issue_details.get("assignee"):
+                logger.info(f"Issue #{number} already assigned, marking notification as read")
+                self._mark_notification_read(thread_url)
+                continue
+
+            issue_details["_repo"] = full_repo
+            issue_details["_mention_comment"] = mention_comment_body
+            issue_details["_is_pr"] = is_pr
+            issue_details["number"] = number
+            issue_details["_thread_url"] = thread_url
+            issue_details["_comment_author"] = comment_author
+
+            all_issues.append(issue_details)
 
         return all_issues
+
+    def _has_reviewed_pr(self, repo: str, pr_number: int, username: str) -> bool:
+        """Check if user has submitted a review on the PR"""
+        if not username:
+            return False
+        
+        if username == self.github_username:
+            return True
+        
+        try:
+            reviews = self._api_request(f"repos/{repo}/pulls/{pr_number}/reviews?per_page=100", silent=True)
+            if reviews:
+                for review in reviews:
+                    if review.get("user", {}).get("login") == username:
+                        return True
+        except Exception:
+            pass
+        
+        return False
 
     def _is_contributor(self, repo: str, username: str) -> bool:
         """Check if user is a contributor to the repo"""
@@ -334,36 +424,32 @@ class GitHubAgent:
         if username == self.github_username:
             return True
         
+        # For repos we don't have access to, trust that commenters are allowed
+        # We can't check contributors/collaborators on external repos
         try:
-            contributors = self._api_request(f"repos/{repo}/contributors?per_page=100")
+            contributors = self._api_request(f"repos/{repo}/contributors?per_page=100", silent=True)
             if contributors:
                 for contributor in contributors:
                     if contributor.get("login") == username:
                         return True
-            
-            members = self._api_request(f"repos/{repo}/collaborators?per_page=100")
-            if members:
-                for member in members:
-                    if member.get("login") == username:
-                        return True
         except Exception:
             pass
         
+        # If we can't verify contributors, trust the mentioner
+        # This allows mentions from external repos where we lack access
         return True
 
-    def _handle_pr(self, pr: Dict) -> bool:
-        """Handle a PR that needs attention"""
+    def _handle_pr_from_notification(self, pr: Dict) -> bool:
+        """Handle a PR mentioned in a notification."""
         repo = pr.get("_repo")
         pr_number = pr["number"]
-        logger.info(f"Handling PR #{repo}#{pr_number}: {pr['title']}")
+        logger.info(f"Handling PR #{repo}#{pr_number} from notification: {pr['title']}")
 
         import uuid
         conv_id_str = f"{repo.replace('/', '_')}_pr_{pr_number}"
         conv_id = uuid.uuid5(uuid.NAMESPACE_DNS, conv_id_str)
         conv_state_dir = self.state_dir / "conversations" / conv_id_str
         conv_state_dir.mkdir(parents=True, exist_ok=True)
-
-        logger.info(f"Starting conversation for PR #{pr_number} (id: {conv_id})")
 
         conversation = Conversation(
             agent=self.agent,
@@ -372,10 +458,46 @@ class GitHubAgent:
             conversation_id=conv_id,
         )
 
-        prompt = self._build_pr_prompt(pr)
+        comment_author = pr.get("_comment_author", pr.get("user", {}).get("login", "user"))
+        mention_comment = pr.get("_mention_comment", "")
+        is_review_request = "Review requested" in mention_comment
+        
+        if is_review_request:
+            prompt = f"""You have been requested to review this PR.
+
+PR: #{pr_number} - {pr['title']}
+Repo: {repo}
+https://github.com/{repo}/pull/{pr_number}
+
+Requested by: @{comment_author}
+
+Your task:
+1. Review the PR code changes
+2. Check if the changes are correct and complete
+3. Add review comments if you find issues
+4. Approve or request changes based on your review
+
+Use `gh` CLI to checkout the PR: `gh pr checkout {pr_number}`"""
+        else:
+            prompt = f"""A user tagged you in a comment on this PR. Respond to their request.
+
+PR: #{pr_number} - {pr['title']}
+Repo: {repo}
+https://github.com/{repo}/pull/{pr_number}
+
+Comment from @{comment_author}:
+{mention_comment}
+
+Your task:
+1. Understand the user's request in the comment
+2. Review the PR and address any feedback
+3. Push updates if needed, or comment back with your findings
+4. If you need more information, ask the user
+
+Use `gh` CLI to checkout the PR: `gh pr checkout {pr_number}`"""
+
         conversation.send_message(prompt)
         conversation.run()
-
         self._save_state()
         return True
 
@@ -470,6 +592,22 @@ class GitHubAgent:
 
         logger.info(f"Starting conversation for issue #{issue_number} (id: {conv_id})")
 
+        # Configure git identity to ensure commits use correct email/name
+        import subprocess
+        git_email = os.getenv("GIT_USER_EMAIL", f"{self.github_username}@users.noreply.github.com")
+        git_name = os.getenv("GIT_USER_NAME", self.github_username)
+        try:
+            subprocess.run(
+                ["git", "config", "--global", "user.email", git_email],
+                check=True, capture_output=True
+            )
+            subprocess.run(
+                ["git", "config", "--global", "user.name", git_name],
+                check=True, capture_output=True
+            )
+        except Exception as e:
+            logger.warning(f"Failed to configure git: {e}")
+
         conversation = Conversation(
             agent=self.agent,
             workspace=str(self.work_dir),
@@ -478,18 +616,27 @@ class GitHubAgent:
         )
 
         if issue.get("_mention_comment"):
-            prompt = f"""Issue: {issue['title']}
-Description: {issue.get('body', 'No description provided')}
+            comment_author = issue.get("_comment_author", issue.get("user", {}).get("login", "user"))
+            prompt = f"""A user tagged you in a comment on this issue. Respond to their request.
 
-User request: {issue['_mention_comment']}
+Issue: #{issue['number']} - {issue['title']}
+Repo: {repo}
+https://github.com/{repo}/issues/{issue['number']}
 
-Please work on this issue."""
+Comment from @{comment_author}:
+{issue['_mention_comment']}
+
+Your task:
+1. Understand the user's request in the comment
+2. Respond appropriately - comment back, ask clarifying questions, or help if possible
+3. Only create a PR if the user explicitly asks you to make changes
+
+Respond with a comment on the issue addressing their request. Use `gh issue comment {issue['number']} --body "..."` to respond."""
         else:
             prompt = self._build_issue_prompt(issue, is_assigned)
 
         conversation.send_message(prompt)
         conversation.run()
-
         self._save_state()
         return True
 
@@ -513,8 +660,21 @@ Please work on this issue."""
         - gh issue comment {issue["number"]} --body "..." - to comment
         - gh repo clone {repo} - clone this repo: {repo}
         - If you don't have write access to {repo}, fork first: gh repo fork {repo} --clone=true
+        - IMPORTANT: If `git push` fails with permission error:
+          1. Check if you forked the repo
+          2. If not, fork it: gh repo fork {repo} --clone=true
+          3. Push to your fork: git push origin <branch-name>
+          4. Create PR from your fork: gh pr create --head <your-username>:<branch-name>
         - git push origin <branch> - push to your fork or the repo if you have access
         - gh pr create --title "Fix #{issue["number"]}: {issue.get('title', 'Issue')}" --body "PR description" - to create a PR
+        - IMPORTANT: For multi-line comments, use `--body-file -` to read from stdin:
+          ```
+          gh issue comment {issue["number"]} --body-file - << 'EOF'
+          Line 1
+          Line 2
+          EOF
+          ```
+        - NEVER use --body with literal \n characters - always use `--body-file -` for multi-line content
 
         When creating a PR, use the following body format:
         ```
@@ -543,18 +703,7 @@ Please work on this issue."""
         timestamp = datetime.now().isoformat()
 
         try:
-            # 1. Handle PRs needing attention
-            logger.info("Checking PRs needing attention...")
-            prs = self._get_active_prs()
-            logger.info(f"Found {len(prs)} PRs needing attention")
-
-            for pr in prs:
-                try:
-                    self._handle_pr(pr)
-                except Exception as e:
-                    logger.error(f"Failed to handle PR #{pr['number']}: {e}")
-
-            # 2. Handle assigned issues
+            # 1. Handle assigned issues
             logger.info("Checking assigned issues...")
             assigned_issues = self._get_assigned_issues()
             logger.info(f"Found {len(assigned_issues)} assigned issues")
@@ -575,8 +724,17 @@ Please work on this issue."""
             for issue in mentioned_issues:
                 try:
                     repo = issue.get("_repo")
-                    self._assign_issue(repo, issue["number"])
-                    self._handle_issue(issue, is_assigned=True)
+                    is_pr = "pull_request" in issue or issue.get("_is_pr", False)
+                    if is_pr:
+                        self._handle_pr_from_notification(issue)
+                    else:
+                        self._assign_issue(repo, issue["number"])
+                        self._handle_issue(issue, is_assigned=True)
+                    
+                    # Mark notification as read only after successful processing
+                    thread_url = issue.get("_thread_url")
+                    if thread_url:
+                        self._mark_notification_read(thread_url)
                 except Exception as e:
                     logger.error(
                         f"Failed to handle mentioned issue #{issue['number']}: {e}"
@@ -594,8 +752,7 @@ Please work on this issue."""
             f"Starting OpenHands GitHub Agent (heartbeat every {self.heartbeat_interval}s)"
         )
         logger.info(f"Username: {self.github_username}")
-        logger.info(f"Watching accounts: {', '.join(self.github_repos)}")
-        logger.info(f"Active repos: {len(self.active_repos)}")
+        logger.info("Using GitHub notifications API for all repos")
 
         self._run_heartbeat()
 
@@ -613,9 +770,9 @@ Please work on this issue."""
 
 def main():
     """Main entry point"""
-    required_vars = ["GITHUB_TOKEN", "GITHUB_REPOSITORIES", "LLM_API_KEY"]
+    required_vars = ["GITHUB_TOKEN", "LLM_API_KEY"]
     missing = [var for var in required_vars if not os.getenv(var)]
-
+    
     if missing:
         print(f"Error: Missing required environment variables: {', '.join(missing)}")
         sys.exit(1)
