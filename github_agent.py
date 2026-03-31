@@ -655,6 +655,17 @@ Respond with a comment on the issue addressing their request. Use `gh issue comm
         Clone repo to: {self.work_dir}/{repo}
         Create workspace for your changes: {self.work_dir}/{issue["number"]}_{repo.split('/')[1]}
 
+        CRITICAL - Git Configuration:
+        After cloning the repo, you MUST configure git identity BEFORE making any commits:
+        ```
+        cd {self.work_dir}/{repo}
+        git config user.email "${{GIT_USER_EMAIL:-${{GITHUB_USERNAME}}@users.noreply.github.com}}"
+        git config user.name "${{GITHUB_USERNAME}}"
+        git config user.name  # Verify it's set correctly
+        git config user.email  # Verify it's set correctly
+        ```
+        NEVER commit without first verifying the git config shows the correct username and email.
+
         Use `gh` CLI for GitHub operations:
         - gh issue view {issue["number"]} - to see issue details
         - gh issue comment {issue["number"]} --body "..." - to comment
