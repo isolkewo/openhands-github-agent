@@ -70,6 +70,16 @@ class GitHubAgent:
             disable_vision=True,
         )
 
+        # MCP configuration
+        mcp_config = {
+            "mcpServers": {
+                "playwright": {
+                    "command": "npx",
+                    "args": ["@playwright/mcp@latest"]
+                }
+            }
+        }
+
         # Create agent with tools and conversation condenser
         self.agent = Agent(
             llm=llm,
@@ -82,6 +92,7 @@ class GitHubAgent:
                 Tool(name=ApplyPatchTool.name),
                 Tool(name=DelegateTool.name),
             ],
+            mcp_config=mcp_config,
             system_prompt_filename=str(self.base_dir / "prompts/github_agent_system_prompt.j2"),
             system_prompt_kwargs={"llm_security_analyzer": False},
             condenser=LLMSummarizingCondenser(
